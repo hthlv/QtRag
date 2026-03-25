@@ -6,23 +6,38 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <iostream>
+#include <sstream>
 namespace asio = boost::asio;
 namespace beast = boost::beast;
 namespace http = beast::http;
 using tcp = asio::ip::tcp;
 
-static http::response<http::string_body> make_json_response(unsigned version,
-                                                            http::status status,
-                                                            const std::string &body) {
-    http::response<http::string_body> res;
-    res.version(version);
-    res.result(status);
-    res.set(http::field::server, "QtRAG-Server");
-    res.set(http::field::content_type, "application/json");
-    res.keep_alive(false);
-    res.body() = body;
-    res.prepare_payload();
-    return res;
+namespace {
+    std::string method_to_string(http::verb method) {
+        return std::string(http::to_string(method));
+    }
+
+    void log_info(const std::string &message) {
+        std::cout << "[INFO] " << message << "\n";
+    }
+
+    void log_error(const std::string &message) {
+        std::cerr << "[ERROR] " << message << "\n";
+    }
+
+    http::response<http::string_body> make_json_response(unsigned version,
+                                                         http::status status,
+                                                         const std::string &body) {
+        http::response<http::string_body> res;
+        res.version(version);
+        res.result(status);
+        res.set(http::field::server, "QtRAG-Server");
+        res.set(http::field::content_type, "application/json");
+        res.keep_alive(false);
+        res.body() = body;
+        res.prepare_payload();
+        return res;
+    }
 }
 
 HttpServer::HttpServer(const std::string &address, unsigned short port)
@@ -32,7 +47,9 @@ HttpServer::HttpServer(const std::string &address, unsigned short port)
 }
 
 void HttpServer::run() {
-    std::cout << "Starting server on " << address_ << ":" << port_ << "\n";
+    std::ostringstream oss;
+    oss << "Starting server on " << address_ << ":" << port_ << "\n";
+    log_info(oss.str());
     do_accept_loop();
 }
 
@@ -40,7 +57,9 @@ void HttpServer::do_accept_loop() {
     auto ip_address = asio::ip::make_address(address_);
     tcp::endpoint endpoint{ip_address, port_};
     tcp::acceptor acceptor{ioc_, endpoint};
-    std::cout << "Server listening at http://" << address_ << ":" << port_ << "\n";
+    std::ostringstream oss;
+    oss << "Server listening at http://" << address_ << ":" << port_ << "\n";
+    log_info(oss.str());
     for (;;) {
         tcp::socket socket{ioc_};
         acceptor.accept(socket);
@@ -53,9 +72,9 @@ void HttpServer::handle_connection(tcp::socket socket) {
         beast::flat_buffer buffer;
         http::request<http::string_body> req;
         http::read(socket, buffer, req);
-        std::cout << "[Request] "
-                << req.method_string() << " "
-                << req.target() << '\n';
+        std::ostringstream oss;
+        oss << "Incoming request: " << method_to_string(req.method()) << " " << req.target();
+        log_info(oss.str());
         http::response<http::string_body> res;
         res.version(req.version());
         res.set(http::field::server, "QtRAG-Server");
@@ -71,6 +90,8 @@ void HttpServer::handle_connection(tcp::socket socket) {
         beast::error_code ec;
         socket.shutdown(tcp::socket::shutdown_send, ec);
     } catch (const std::exception &ex) {
-        std::cerr << "[Connection Error] " << ex.what() << '\n';
+        std::ostringstream oss;
+        oss << "Connection handling failed: " << ex.what();
+        log_error(oss.str());
     }
 }
