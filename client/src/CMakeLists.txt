@@ -1,0 +1,6 @@
+add_subdirectory(ui)
+#add_subdirectory(controllers)
+#add_subdirectory(services)
+#add_subdirectory(network)
+#add_subdirectory(storage)
+#add_subdirectory(models)
