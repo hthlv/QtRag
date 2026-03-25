@@ -11,6 +11,20 @@ namespace beast = boost::beast;
 namespace http = beast::http;
 using tcp = asio::ip::tcp;
 
+static http::response<http::string_body> make_json_response(unsigned version,
+                                                            http::status status,
+                                                            const std::string &body) {
+    http::response<http::string_body> res;
+    res.version(version);
+    res.result(status);
+    res.set(http::field::server, "QtRAG-Server");
+    res.set(http::field::content_type, "application/json");
+    res.keep_alive(false);
+    res.body() = body;
+    res.prepare_payload();
+    return res;
+}
+
 HttpServer::HttpServer(const std::string &address, unsigned short port)
     : address_(address),
       port_(port),
@@ -48,11 +62,9 @@ void HttpServer::handle_connection(tcp::socket socket) {
         res.set(http::field::content_type, "application/json");
         res.keep_alive(false);
         if (req.method() == http::verb::get && req.target() == "/health") {
-            res.result(http::status::ok);
-            res.body() = R"({"status":"ok"})";
+            res = make_json_response(req.version(), http::status::ok, R"({"status":"ok"})");
         } else {
-            res.result(http::status::not_found);
-            res.body() = R"({"error":"not found"})";
+            res = make_json_response(req.version(), http::status::not_found, R"({"status":"not_found"})");
         }
         res.prepare_payload();
         http::write(socket, res);
