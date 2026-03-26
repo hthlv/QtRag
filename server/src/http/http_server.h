@@ -8,10 +8,13 @@
 #include <string>
 #include <memory>
 
+// 前向声明
 struct sqlite3;
 class EmbeddingClient;
 class InMemoryVectorStore;
 class Retriever;
+class PromptBuilder;
+class LLMClient;
 
 // 基于 Boost.Beast 的最小 HTTP 服务器，当前以同步方式处理请求。
 class HttpServer {
@@ -44,6 +47,9 @@ private:
 
     // 检索接口
     Response handle_retrieve(const Request &req);
+
+    // 非流式 chat 接口
+    Response handle_chat(const Request &req);
 private:
     // 监听绑定的 IP 地址字符串。
     std::string address_;
@@ -55,8 +61,11 @@ private:
     boost::asio::io_context ioc_;
 
     sqlite3 *db_{nullptr};
-
+    // 检索相关组件
     std::unique_ptr<EmbeddingClient> embedding_client_;
     std::unique_ptr<InMemoryVectorStore> vector_store_;
     std::unique_ptr<Retriever> retriever_;
+    // prompt 与 LLM
+    std::unique_ptr<PromptBuilder> prompt_builder_;
+    std::unique_ptr<LLMClient> llm_client_;
 };

@@ -4,9 +4,11 @@
 
 #include "http_server.h"
 #include "adapters/embedding_client.h"
+#include "adapters/llm_client.h"
 #include "core/chunker.h"
 #include "core/retriever.h"
 #include "core/in_memory_vector_store.h"
+#include "core/prompt_builder.h"
 #include "models/document_record.h"
 #include "models/chunk_record.h"
 #include "storage/repositories/document_repository.h"
@@ -193,6 +195,30 @@ namespace {
         oss << "]}";
         return oss.str();
     }
+
+    // 将 answer + reference 拼成 chat 接口返回 json
+    std::string build_chat_result_json(const std::string &answer,
+                                       const std::vector<RetrievedChunk> &refs) {
+        std::ostringstream oss;
+        oss << "{";
+        oss << R"("answer":")" << escape_json(answer) << "\",";
+        oss << R"("references":[)";
+        for (std::size_t i = 0; i < refs.size(); ++i) {
+            const auto &item = refs[i];
+            if (i > 0) {
+                oss << ",";
+            }
+            oss << "{"
+                    << R"("chunk_id":")" << escape_json(item.chunk_id) << "\","
+                    << R"("doc_id":")" << escape_json(item.doc_id) << "\","
+                    << R"("filename":")" << escape_json(item.filename) << "\","
+                    << R"("score":)" << item.score << ","
+                    << R"("text":")" << escape_json(item.text) << "\""
+                    << "}";
+        }
+        oss << "]}";
+        return oss.str();
+    }
 }
 
 HttpServer::HttpServer(const std::string &address, unsigned short port, sqlite3 *db)
@@ -202,7 +228,9 @@ HttpServer::HttpServer(const std::string &address, unsigned short port, sqlite3 
       db_(db),
       embedding_client_(std::make_unique<EmbeddingClient>()),
       vector_store_(std::make_unique<InMemoryVectorStore>()),
-      retriever_(std::make_unique<Retriever>(embedding_client_.get(), vector_store_.get(), db_)) {
+      retriever_(std::make_unique<Retriever>(embedding_client_.get(), vector_store_.get(), db_)),
+      prompt_builder_(std::make_unique<PromptBuilder>()),
+      llm_client_(std::make_unique<LLMClient>()) {
     // 当前 io_context 只配置一个执行线程，足够支撑最小原型。
 }
 
@@ -276,8 +304,14 @@ HttpServer::Response HttpServer::handle_request(const Request &req) {
         return handle_upload_document(req);
     }
 
+    // 检索
     if (req.method() == http::verb::post && req.target() == "/api/v1/retrieve") {
         return handle_retrieve(req);
+    }
+
+    // chat
+    if (req.method() == http::verb::post && req.target() == "/api/v1/chat") {
+        return handle_chat(req);
     }
 
     // 对已支持的方法返回 404，说明路径不存在。
@@ -440,5 +474,38 @@ HttpServer::Response HttpServer::handle_retrieve(const Request &req) {
             req.version(),
             http::status::internal_server_error,
             R"({"error":"retrieve failed"})");
+    }
+}
+
+HttpServer::Response HttpServer::handle_chat(const Request &req) {
+    // 1. 请求体直接放 query 文本
+    // 2. X-Top-K 指定检索数量，默认 3
+    const std::string query = req.body();
+    const std::size_t top_k = parse_top_k(req, 3);
+    // 空 query 直接返回 400
+    if (query.empty()) {
+        return make_json_response(
+            req.version(),
+            http::status::bad_request,
+            R"({"error":"empty query"})");
+    }
+    try {
+        // 1. 检索知识库中的相关片段
+        auto refs = retriever_->retrieve(query, top_k);
+        // 2. 构造 prompt
+        std::string prompt = prompt_builder_->build(query, refs);
+        // 3. 调用LLM生成回答
+        std::string answer = llm_client_->generate(query, refs, prompt);
+        // 4. 返回 answer + reference
+        return make_json_response(
+            req.version(),
+            http::status::ok,
+            build_chat_result_json(answer, refs));
+    } catch (const std::exception &ex) {
+        log_error(std::string("chat request failed: ") + ex.what());
+        return make_json_response(
+            req.version(),
+            http::status::internal_server_error,
+            R"({"error":"chat failed"})");
     }
 }
