@@ -3,7 +3,10 @@
 //
 
 #include "http_server.h"
+#include "adapters/embedding_client.h"
 #include "core/chunker.h"
+#include "core/retriever.h"
+#include "core/in_memory_vector_store.h"
 #include "models/document_record.h"
 #include "models/chunk_record.h"
 #include "storage/repositories/document_repository.h"
@@ -152,15 +155,59 @@ namespace {
         oss << "]}";
         return oss.str();
     }
+
+    // 从请求头解析 tok-k，默认值为3
+    std::size_t parse_top_k(const HttpServer::Request &req, std::size_t default_value = 3) {
+        auto raw = get_header_value(req, "X-Top-K");
+        if (raw.empty()) {
+            return default_value;
+        }
+        try {
+            int value = std::stoi(raw);
+            if (value <= 0) {
+                return default_value;
+            }
+            return static_cast<std::size_t>(value);
+        } catch (...) {
+            return default_value;
+        }
+    }
+
+    // 将检索结果拼成 JSON
+    std::string build_retrieve_result_json(const std::vector<RetrievedChunk> &items) {
+        std::ostringstream oss;
+        oss << R"({"items":[)";
+        for (std::size_t i = 0; i < items.size(); ++i) {
+            const auto &item = items[i];
+            if (i > 0) {
+                oss << ",";
+            }
+            oss << "{"
+                    << R"("chunk_id":")" << escape_json(item.chunk_id) << "\","
+                    << R"("doc_id":")" << escape_json(item.doc_id) << "\","
+                    << R"("filename":")" << escape_json(item.filename) << "\","
+                    << R"("score":)" << item.score << ","
+                    << R"("text":")" << escape_json(item.text) << "\""
+                    << "}";
+        }
+        oss << "]}";
+        return oss.str();
+    }
 }
 
 HttpServer::HttpServer(const std::string &address, unsigned short port, sqlite3 *db)
     : address_(address),
       port_(port),
       ioc_(1),
-      db_(db) {
+      db_(db),
+      embedding_client_(std::make_unique<EmbeddingClient>()),
+      vector_store_(std::make_unique<InMemoryVectorStore>()),
+      retriever_(std::make_unique<Retriever>(embedding_client_.get(), vector_store_.get(), db_)) {
     // 当前 io_context 只配置一个执行线程，足够支撑最小原型。
 }
+
+HttpServer::~HttpServer() = default;
+
 
 void HttpServer::run() {
     std::ostringstream oss;
@@ -227,6 +274,10 @@ HttpServer::Response HttpServer::handle_request(const Request &req) {
     // 上传文档
     if (req.method() == http::verb::post && req.target() == "/api/v1/docs/upload") {
         return handle_upload_document(req);
+    }
+
+    if (req.method() == http::verb::post && req.target() == "/api/v1/retrieve") {
+        return handle_retrieve(req);
     }
 
     // 对已支持的方法返回 404，说明路径不存在。
@@ -304,7 +355,15 @@ HttpServer::Response HttpServer::handle_upload_document(const Request &req) {
             chunk.chunk_index = static_cast<int>(i);
             chunk.content = chunks[i];
             chunk.created_at = now;
+            // 写入数据库
             chunkRepo.insert(chunk);
+            // 为 chunk 生成 embedding，并写入内存向量索引
+            const auto embedding = embedding_client_->embed(chunk.content);
+            vector_store_->add(
+                chunk.id,
+                chunk.doc_id,
+                chunk.content,
+                embedding);
         }
         // 4. 更新文档状态会 indexed，并写入 chunk_count
         docRepo.update_status_and_chunk_count(doc.id, "indexed", static_cast<int>(chunks.size()), current_timestamp());
@@ -338,18 +397,6 @@ HttpServer::Response HttpServer::handle_upload_document(const Request &req) {
             http::status::internal_server_error,
             R"({"error":"failed to index document"})");
     }
-
-    // 返回成功 JSON
-    std::ostringstream oss;
-    oss << "{"
-            << R"("doc_id":")" << escape_json(doc_id) << "\","
-            << R"("filename":")" << escape_json(safe_filename) << "\","
-            << R"("status":"uploaded")"
-            << "}";
-    return make_json_response(
-        req.version(),
-        http::status::ok,
-        oss.str());
 }
 
 HttpServer::Response HttpServer::handle_list_documents(const Request &req) {
@@ -366,5 +413,32 @@ HttpServer::Response HttpServer::handle_list_documents(const Request &req) {
             req.version(),
             http::status::internal_server_error,
             R"({"error":"failed to list documents"})");
+    }
+}
+
+HttpServer::Response HttpServer::handle_retrieve(const Request &req) {
+    // 1. 请求体直接就是 query 文本
+    // 2. 可选请求头 X-Top-K 指定返回数量
+    const std::string query = req.body();
+    const std::size_t top_k = parse_top_k(req, 3);
+    if (query.empty()) {
+        return make_json_response(
+            req.version(),
+            http::status::bad_request,
+            R"({"error":"empty query"})");
+    }
+    try {
+        // 调用 retriever 做索引
+        auto items = retriever_->retrieve(query, top_k);
+        return make_json_response(
+            req.version(),
+            http::status::ok,
+            build_retrieve_result_json(items));
+    } catch (const std::exception &ex) {
+        log_error(std::string("retrieve failed: ") + ex.what());
+        return make_json_response(
+            req.version(),
+            http::status::internal_server_error,
+            R"({"error":"retrieve failed"})");
     }
 }

@@ -2,4 +2,8 @@ target_sources(${QTRAG_SERVER_TARGET}
     PRIVATE
         chunker.cpp
         chunker.h
+        retriever.cpp
+        retriever.h
+        in_memory_vector_store.cpp
+        in_memory_vector_store.h
 )
