@@ -12,8 +12,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Sql)
 
 set(QTRAG_CLIENT_TARGET QtRagClient)
 
@@ -35,7 +34,8 @@ target_include_directories(${QTRAG_CLIENT_TARGET}
 
 target_link_libraries(${QTRAG_CLIENT_TARGET}
     PRIVATE
-        Qt${QT_VERSION_MAJOR}::Widgets
+        Qt6::Widgets
+        Qt6::Sql
 )
 
 set_target_properties(${QTRAG_CLIENT_TARGET} PROPERTIES
