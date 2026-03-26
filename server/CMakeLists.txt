@@ -11,6 +11,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(Boost REQUIRED COMPONENTS system)
 find_package(Threads REQUIRED)
 find_package(SQLite3 REQUIRED)
+find_package(nlohmann_json REQUIRED)
 
 set(QTRAG_SERVER_TARGET QtRagServer)
 
@@ -30,4 +31,5 @@ target_link_libraries(${QTRAG_SERVER_TARGET}
         Boost::system
         Threads::Threads
         SQLite::SQLite3
+        nlohmann_json::nlohmann_json
 )

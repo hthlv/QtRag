@@ -5,17 +5,20 @@
 #pragma once
 #include <boost/asio.hpp>
 #include <boost/beast/http.hpp>
+#include <string>
+
+struct sqlite3;
 
 // 基于 Boost.Beast 的最小 HTTP 服务器，当前以同步方式处理请求。
 class HttpServer {
 public:
     // address 和 port 共同决定监听地址，例如 127.0.0.1:8080。
-    HttpServer(const std::string &address, unsigned short port);
+    HttpServer(const std::string &address, unsigned short port, sqlite3 *db);
 
     // 启动监听循环，阻塞当前线程直到进程退出。
     void run();
 
-private:
+public:
     // 当前版本统一使用字符串请求体，便于直接返回 JSON 文本。
     using Request = boost::beast::http::request<boost::beast::http::string_body>;
     using Response = boost::beast::http::response<boost::beast::http::string_body>;
@@ -26,8 +29,14 @@ private:
     // 读取单个连接上的 HTTP 请求并返回响应。
     void handle_connection(boost::asio::ip::tcp::socket socket);
 
-    // 根据路由和方法生成响应内容。
+    // 统一请求分发入口
     Response handle_request(const Request &req);
+
+    // 处理上传文档
+    Response handle_upload_document(const Request &req);
+
+    // 处理获取文档列表
+    Response handle_list_documents(const Request &req);
 private:
     // 监听绑定的 IP 地址字符串。
     std::string address_;
@@ -37,4 +46,6 @@ private:
 
     // 单线程 io_context，当前只服务同步 accept/read/write。
     boost::asio::io_context ioc_;
+
+    sqlite3 *db_{nullptr};
 };

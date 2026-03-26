@@ -3,16 +3,47 @@
 //
 
 #include "http_server.h"
+#include "models/document_record.h"
+#include "storage/repositories/document_repository.h"
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <iostream>
 #include <sstream>
+#include <chrono>
+#include <cctype>
+#include <fstream>
+#include <filesystem>
 namespace asio = boost::asio;
 namespace beast = boost::beast;
 namespace http = beast::http;
 using tcp = asio::ip::tcp;
 
 namespace {
+    // JSON字符串转移
+    std::string escape_json(const std::string &input) {
+        std::string output;
+        output.reserve(input.size() + 16);
+        for (char ch: input) {
+            switch (ch) {
+                case '\"': output += "\\\"";
+                    break;
+                case '\\': output += "\\\\";
+                    break;
+                case '\n':
+                    output += "\\n";
+                    break;
+                case '\r':
+                    output += "\\r";
+                    break;
+                case '\t':
+                    output += "\\t";
+                    break;
+            }
+        }
+
+        return output;
+    }
+
     // 把枚举形式的 HTTP 方法转成便于日志输出的字符串。
     std::string method_to_string(http::verb method) {
         return std::string(http::to_string(method));
@@ -42,12 +73,84 @@ namespace {
         res.prepare_payload();
         return res;
     }
+
+    // 获取当前秒级时间戳
+    std::int64_t current_timestamp() {
+        return static_cast<std::int64_t>(std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
+    }
+
+    // 生成一个简单的文档ID
+    std::string generate_docuemtn_id() {
+        auto now = std::chrono::system_clock::now().time_since_epoch().count();
+        return "doc_" + std::to_string(now);
+    }
+
+    // 清洗文件名，防止路径穿越
+    // 只保留字母、数字、点、横杠、下划线
+    std::string sanitize_filename(const std::string &filename) {
+        std::string result;
+        result.reserve(filename.size());
+        for (unsigned char ch: filename) {
+            if (std::isalnum(ch) || ch == '.' || ch == '-' || ch == '_') {
+                result.push_back(ch);
+            }
+        }
+
+        // 如果过滤后为空，给个默认文件名
+        if (result.empty()) {
+            result = "unnamed.txt";
+        }
+
+        return result;
+    }
+
+    // 从请求头读取自定义header
+    std::string get_header_value(const HttpServer::Request &req, const std::string &key) {
+        auto it = req.find(key);
+        if (it == req.end()) {
+            return "";
+        }
+        return std::string(it->value());
+    }
+
+    // 将文本写入文件
+    bool write_file(const std::string &path, const std::string &content) {
+        std::ofstream ofs(path, std::ios::binary);
+        if (!ofs.is_open()) {
+            return false;
+        }
+        ofs.write(content.data(), static_cast<std::streamsize>(content.size()));
+        return ofs.good();
+    }
+
+    // 将文件列表拼成 json
+    std::string build_document_list_json(const std::vector<DocumentRecord> &docs) {
+        std::ostringstream oss;
+        oss << R"({"items":[})";
+        for (std::size_t i = 0; i < docs.size(); ++i) {
+            const auto &doc = docs[i];
+            if (i > 0) {
+                oss << ",";
+            }
+            oss << "{"
+                    << R"("id":")" << escape_json(doc.id) << "\","
+                    << R"("kb_id":")" << escape_json(doc.kb_id) << "\","
+                    << R"("filename":")" << escape_json(doc.filename) << "\","
+                    << R"("status":")" << escape_json(doc.status) << "\","
+                    << R"("chunk_count":)" << doc.chunk_count << ","
+                    << R"("created_at":)" << doc.created_at
+                    << "}";
+        }
+        oss << "]}";
+        return oss.str();
+    }
 }
 
-HttpServer::HttpServer(const std::string &address, unsigned short port)
+HttpServer::HttpServer(const std::string &address, unsigned short port, sqlite3 *db)
     : address_(address),
       port_(port),
-      ioc_(1) {
+      ioc_(1),
+      db_(db) {
     // 当前 io_context 只配置一个执行线程，足够支撑最小原型。
 }
 
@@ -108,17 +211,14 @@ HttpServer::Response HttpServer::handle_request(const Request &req) {
             R"({"status":"ok"})");
     }
 
-    // Echo 接口主要用于联调，直接把请求体回传给客户端。
-    if (req.method() == http::verb::post && req.target() == "/echo") {
-        std::string body = req.body();
+    // 获取文档列表
+    if (req.method() == http::verb::get && req.target() == "/api/v1/docs") {
+        return handle_list_documents(req);
+    }
 
-        // 这里直接拼接 JSON 仅用于原型验证，正式版本应做转义处理。
-        std::string json = std::string(R"({"message":"echo endpoint","body":)") +
-            "\"" + body + "\"}";
-        return make_json_response(
-            req.version(),
-            http::status::ok,
-            json);
+    // 上传文档
+    if (req.method() == http::verb::post && req.target() == "/api/v1/docs/upload") {
+        return handle_upload_document(req);
     }
 
     // 对已支持的方法返回 404，说明路径不存在。
@@ -134,4 +234,88 @@ HttpServer::Response HttpServer::handle_request(const Request &req) {
         req.version(),
         http::status::method_not_allowed,
         R"({"error":"method not allowed"})");
+}
+
+HttpServer::Response HttpServer::handle_upload_document(const Request &req) {
+    // 读取自定义 header
+    const std::string raw_filename = get_header_value(req, "X-Filename");
+    const std::string kb_id = get_header_value(req, "X-Kb-Id").empty() ? "default" : get_header_value(req, "X-Kb-Id");
+    // 简单校验：文件名不能为空
+    if (raw_filename.empty()) {
+        return make_json_response(
+            req.version(),
+            http::status::bad_request,
+            R"({"error":"missing X-Filename header"})");
+    }
+    // 简单校验：请求体不能为空
+    if (req.body().empty()) {
+        return make_json_response(
+            req.version(),
+            http::status::bad_request,
+            R"({"error":"empty request body"})");
+    }
+    // 清洗文件名，防止 ../ 路径穿越
+    const std::string safe_filename = sanitize_filename(raw_filename);
+    const std::string doc_id = generate_docuemtn_id();
+    const std::int64_t now = current_timestamp();
+    // 确保目录存在
+    std::filesystem::create_directories("data/files");
+    // 服务器本地保存路径
+    const std::string file_path = "data/files/" + doc_id + "_" + safe_filename;
+    // 写文件磁盘
+    if (!write_file(file_path, req.body())) {
+        return make_json_response(
+            req.version(),
+            http::status::internal_server_error,
+            R"({"error":"failed to save file"})");
+    }
+    // 将文档元数据写入数据库
+    try {
+        DocumentRepository repo(db_);
+        DocumentRecord doc;
+        doc.id = doc_id;
+        doc.kb_id = kb_id;
+        doc.filename = safe_filename;
+        doc.file_path = file_path;
+        doc.status = "uploaded";
+        doc.chunk_count = 0;
+        doc.created_at = now;
+        doc.updated_at = now;
+        repo.insert(doc);
+    } catch (const std::exception &ex) {
+        log_error(std::string("insert document failed: ") + ex.what());
+        return make_json_response(
+            req.version(),
+            http::status::internal_server_error,
+            R"({"error":"failed to save document metadata"})");
+    }
+
+    // 返回成功 JSON
+    std::ostringstream oss;
+    oss << "{"
+            << R"("doc_id":")" << escape_json(doc_id) << "\","
+            << R"("filename":")" << escape_json(safe_filename) << "\","
+            << R"("status":"uploaded")"
+            << "}";
+    return make_json_response(
+        req.version(),
+        http::status::ok,
+        oss.str());
+}
+
+HttpServer::Response HttpServer::handle_list_documents(const Request &req) {
+    try {
+        DocumentRepository repo(db_);
+        auto docs = repo.list_all();
+        return make_json_response(
+            req.version(),
+            http::status::ok,
+            build_document_list_json(docs));
+    } catch (const std::exception &ex) {
+        log_error(std::string("list documents failed: ") + ex.what());
+        return make_json_response(
+            req.version(),
+            http::status::internal_server_error,
+            R"({"error":"failed to list documents"})");
+    }
 }
