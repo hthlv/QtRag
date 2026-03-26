@@ -19,7 +19,7 @@ namespace http = beast::http;
 using tcp = asio::ip::tcp;
 
 namespace {
-    // JSON字符串转移
+    // JSON字符串转义
     std::string escape_json(const std::string &input) {
         std::string output;
         output.reserve(input.size() + 16);
@@ -29,14 +29,13 @@ namespace {
                     break;
                 case '\\': output += "\\\\";
                     break;
-                case '\n':
-                    output += "\\n";
+                case '\n': output += "\\n";
                     break;
-                case '\r':
-                    output += "\\r";
+                case '\r': output += "\\r";
                     break;
-                case '\t':
-                    output += "\\t";
+                case '\t': output += "\\t";
+                    break;
+                default: output += ch;
                     break;
             }
         }
@@ -126,7 +125,7 @@ namespace {
     // 将文件列表拼成 json
     std::string build_document_list_json(const std::vector<DocumentRecord> &docs) {
         std::ostringstream oss;
-        oss << R"({"items":[})";
+        oss << R"({"items":[)";
         for (std::size_t i = 0; i < docs.size(); ++i) {
             const auto &doc = docs[i];
             if (i > 0) {
