@@ -3,3 +3,4 @@ target_sources(${QTRAG_CLIENT_TARGET}
         database_manager.h
         database_manager.cpp
 )
+add_subdirectory(repositories)

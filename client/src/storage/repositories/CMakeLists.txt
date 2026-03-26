@@ -1,0 +1,11 @@
+target_sources(${QTRAG_CLIENT_TARGET}
+    PRIVATE
+        session_repository.h
+        session_repository.cpp
+        message_repository.h
+        message_repository.cpp
+        setting_repository.h
+        setting_repository.cpp
+        document_repository.h
+        document_repository.cpp
+)
