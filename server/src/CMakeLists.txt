@@ -1,5 +1,5 @@
 add_subdirectory(http)
 #add_subdirectory(core)
 #add_subdirectory(adapters)
-#add_subdirectory(storage)
+add_subdirectory(storage)
 #add_subdirectory(utils)
