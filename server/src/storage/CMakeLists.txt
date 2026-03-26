@@ -3,3 +3,5 @@ target_sources(${QTRAG_SERVER_TARGET}
         sqllite_store.h
         sqllite_store.cpp
 )
+
+add_subdirectory(repositories)
