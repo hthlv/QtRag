@@ -16,19 +16,23 @@
 #include <QHBoxLayout>
 #include <QMessageBox>
 #include <QStatusBar>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QUrl>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent),
-      leftList_(nullptr),
-      chatView_(nullptr),
-      inputEdit_(nullptr),
-      sendButton_(nullptr),
-      referenceList_(nullptr) {
+      networkManager_(new QNetworkAccessManager(this)) {
     // 构造阶段只做界面搭建和基础窗口设置，不放业务逻辑。
     setupUi();
     setupMenu();
     setWindowTitle("QtRAG Client");
     resize(1200, 800);
+    statusBar()->showMessage("就绪");
 }
 
 void MainWindow::setupUi() {
@@ -71,6 +75,8 @@ void MainWindow::setupUi() {
     referenceList_ = new QListWidget(this);
     referenceList_->addItem("引用片段将显示在这里");
     rightLayout->addWidget(referenceList_);
+
+    // 三栏布局
     splitter->addWidget(leftPanel);
     splitter->addWidget(centerPanel);
     splitter->addWidget(rightPanel);
@@ -86,12 +92,12 @@ void MainWindow::setupUi() {
             QMessageBox::information(this, "提示", "请输入问题");
             return;
         }
+        // 先在聊天区显示用户消息
         chatView_->append("User: " + text);
-        chatView_->append("AI: [占位回复，后续接服务端]");
         inputEdit_->clear();
+        // 发送网络请求
+        sendChatRequest(text);
     });
-
-    statusBar()->showMessage("未连接服务器");
 }
 
 void MainWindow::setupMenu() {
@@ -101,8 +107,9 @@ void MainWindow::setupMenu() {
     auto *actionSettings = fileMenu->addAction("设置");
     auto *sessionMenu = menuBar()->addMenu("会话");
     auto *actionNewSession = sessionMenu->addAction("新建会话");
+    // 打开文档管理页
     connect(actionImport, &QAction::triggered, this, [this]() {
-        DocumentPage page("http://127.0.0.1:8080", this);
+        DocumentPage page(serverBaseUrl_, this);
         page.exec();
     });
     connect(actionSettings, &QAction::triggered, this, [this]() {
@@ -111,4 +118,81 @@ void MainWindow::setupMenu() {
     connect(actionNewSession, &QAction::triggered, this, [this]() {
         leftList_->addItem("新会话");
     });
+}
+
+void MainWindow::sendChatRequest(const QString &query) {
+    if (!networkManager_) {
+        QMessageBox::critical(this, "聊天失败", "网络模块未初始化");
+        return;
+    }
+    // 构造请求 URL
+    QUrl url(serverBaseUrl_ + "/api/v1/chat");
+    QNetworkRequest request(url);
+    // 请求体直接放 query 文本
+    // X-Top-K 指定检索数量
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "text/plain; charset=utf-8");
+    request.setRawHeader("X-Top-K", "3");
+    // 发送中禁止按钮，防止重复点击
+    sendButton_->setEnabled(false);
+    statusBar()->showMessage("正在请求服务端...");
+    QNetworkReply *reply = networkManager_->post(request, query.toUtf8());
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        sendButton_->setEnabled(true);
+        // 网络错误处理
+        if (reply->error() != QNetworkReply::NoError) {
+            statusBar()->showMessage("请求失败");
+            QMessageBox::warning(this, "聊天失败", reply->errorString());
+            return;
+        }
+        const QByteArray data = reply->readAll();
+        // 解析 JSON
+        QJsonParseError parseError;
+        QJsonDocument doc = QJsonDocument::fromJson(data, &parseError);
+        if (parseError.error != QJsonParseError::NoError) {
+            statusBar()->showMessage("响应解析失败");
+            QMessageBox::warning(this, "聊天失败", parseError.errorString());
+            return;
+        }
+        QJsonObject root = doc.object();
+        // 读取 answer
+        QString answer = root.value("answer").toString();
+        if (answer.isEmpty()) {
+            answer = "[空回答]";
+        }
+        // 显示 AI 回答
+        chatView_->append("AI: " + answer);
+        chatView_->append("");
+        // 渲染右侧引用区
+        renderReferences(data);
+        statusBar()->showMessage("回答完成");
+    });
+}
+
+
+void MainWindow::renderReferences(const QByteArray &jsonData) {
+    referenceList_->clear();
+    QJsonParseError parseError;
+    QJsonDocument doc = QJsonDocument::fromJson(jsonData, &parseError);
+    if (parseError.error != QJsonParseError::NoError) {
+        referenceList_->addItem("引用解析失败");
+        return;
+    }
+    QJsonObject root = doc.object();
+    QJsonArray refs = root.value("refs").toArray();
+    if (refs.isEmpty()) {
+        referenceList_->addItem("无引用片段");
+        return;
+    }
+    for (const auto &ref: refs) {
+        QJsonObject obj = ref.toObject();
+        QString filename = obj.value("filename").toString();
+        double score = obj.value("score").toDouble();
+        QString text = obj.value("text").toString();
+        QString itemText = QString("[%1] score=%2\n%3")
+                .arg(filename.isEmpty() ? "unknown" : filename)
+                .arg(score, 0, 'f', 3)
+                .arg(text.left(120));
+        referenceList_->addItem(itemText);
+    }
 }

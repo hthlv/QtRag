@@ -8,10 +8,12 @@ class QListWidget;
 class QTextEdit;
 class QPushButton;
 class QLabel;
+class QNetworkAccessManager;
 
 // 主窗口负责组织左侧知识库/会话区、中间聊天区和右侧引用区。
 class MainWindow : public QMainWindow {
     Q_OBJECT
+
 public:
     // parent 交给 Qt 父子对象系统管理，默认作为顶层窗口使用。
     explicit MainWindow(QWidget *parent = nullptr);
@@ -19,8 +21,15 @@ public:
 private:
     // 创建主界面的布局和控件。
     void setupUi();
+
     // 创建菜单栏和对应的占位动作。
     void setupMenu();
+
+    // 发送聊天请求
+    void sendChatRequest(const QString &query);
+
+    // 渲染引用列表
+    void renderReferences(const QByteArray &jsonData);
 
 private:
     // 左侧列表同时承载知识库和会话的占位数据。
@@ -40,4 +49,7 @@ private:
 
     // 当前仅保留连接状态字段，后续接入服务端时可以直接复用。
     bool is_connected_{false};
+    // HTTP 网络管理器
+    QNetworkAccessManager *networkManager_{nullptr};
+    QString serverBaseUrl_{"http://127.0.0.1:8080"};
 };
