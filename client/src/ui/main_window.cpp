@@ -3,6 +3,7 @@
 //
 
 #include "main_window.h"
+#include "pages/document_page.h"
 #include <QMenuBar>
 #include <QMenu>
 #include <QAction>
@@ -101,7 +102,8 @@ void MainWindow::setupMenu() {
     auto *sessionMenu = menuBar()->addMenu("会话");
     auto *actionNewSession = sessionMenu->addAction("新建会话");
     connect(actionImport, &QAction::triggered, this, [this]() {
-        QMessageBox::information(this, "导入文档", "Day 1 占位：后续实现上传文档");
+        DocumentPage page("http://127.0.0.1:8080", this);
+        page.exec();
     });
     connect(actionSettings, &QAction::triggered, this, [this]() {
         QMessageBox::information(this, "设置", "Day 1 占位：后续实现设置页");

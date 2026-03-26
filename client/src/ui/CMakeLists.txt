@@ -3,3 +3,5 @@ target_sources(${QTRAG_CLIENT_TARGET}
         main_window.cpp
         main_window.h
 )
+
+add_subdirectory(pages)

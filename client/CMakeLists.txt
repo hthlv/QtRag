@@ -12,7 +12,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Sql)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Sql Network)
 
 set(QTRAG_CLIENT_TARGET QtRagClient)
 
@@ -36,6 +36,7 @@ target_link_libraries(${QTRAG_CLIENT_TARGET}
     PRIVATE
         Qt6::Widgets
         Qt6::Sql
+        Qt6::Network
 )
 
 set_target_properties(${QTRAG_CLIENT_TARGET} PROPERTIES
