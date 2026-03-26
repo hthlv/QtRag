@@ -3,8 +3,11 @@
 //
 
 #include "http_server.h"
+#include "core/chunker.h"
 #include "models/document_record.h"
+#include "models/chunk_record.h"
 #include "storage/repositories/document_repository.h"
+#include "storage/repositories/chunk_repository.h"
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <iostream>
@@ -82,6 +85,12 @@ namespace {
     std::string generate_docuemtn_id() {
         auto now = std::chrono::system_clock::now().time_since_epoch().count();
         return "doc_" + std::to_string(now);
+    }
+
+    // 生成 chunk id
+    std::string generate_chunk_id() {
+        auto now = std::chrono::system_clock::now().time_since_epoch().count();
+        return "chunk_" + std::to_string(now);
     }
 
     // 清洗文件名，防止路径穿越
@@ -270,7 +279,9 @@ HttpServer::Response HttpServer::handle_upload_document(const Request &req) {
     }
     // 将文档元数据写入数据库
     try {
-        DocumentRepository repo(db_);
+        DocumentRepository docRepo(db_);
+        ChunkRepository chunkRepo(db_);
+        // 1. 先插入 documents 表，状态记为 uploaded
         DocumentRecord doc;
         doc.id = doc_id;
         doc.kb_id = kb_id;
@@ -280,13 +291,52 @@ HttpServer::Response HttpServer::handle_upload_document(const Request &req) {
         doc.chunk_count = 0;
         doc.created_at = now;
         doc.updated_at = now;
-        repo.insert(doc);
+        docRepo.insert(doc);
+
+        // 2. 对文本进行切片
+        Chunker chunker(800, 150);
+        auto chunks = chunker.split(req.body());
+        // 3. 把切片结果写入 chunks 表
+        for (std::size_t i = 0; i < chunks.size(); ++i) {
+            ChunkRecord chunk;
+            chunk.id = doc_id + "_chunk_" + std::to_string(i);
+            chunk.doc_id = doc.id;
+            chunk.chunk_index = static_cast<int>(i);
+            chunk.content = chunks[i];
+            chunk.created_at = now;
+            chunkRepo.insert(chunk);
+        }
+        // 4. 更新文档状态会 indexed，并写入 chunk_count
+        docRepo.update_status_and_chunk_count(doc.id, "indexed", static_cast<int>(chunks.size()), current_timestamp());
+
+        // 5. 返回成功响应
+        std::ostringstream oss;
+        oss << "{"
+                << R"("doc_id":")" << escape_json(doc_id) << "\","
+                << R"("filename":")" << escape_json(safe_filename) << "\","
+                << R"("status":"indexed",)"
+                << R"("chunk_count":)" << chunks.size()
+                << "}";
+        return make_json_response(
+            req.version(),
+            http::status::ok,
+            oss.str());
     } catch (const std::exception &ex) {
-        log_error(std::string("insert document failed: ") + ex.what());
+        log_error(std::string("upload/index document failed: ") + ex.what());
+        try {
+            DocumentRepository docRepo(db_);
+            docRepo.update_status_and_chunk_count(
+                doc_id,
+                "failed",
+                0,
+                current_timestamp());
+        } catch (...) {
+            // 这里不再继续抛异常，避免覆盖原始错误
+        }
         return make_json_response(
             req.version(),
             http::status::internal_server_error,
-            R"({"error":"failed to save document metadata"})");
+            R"({"error":"failed to index document"})");
     }
 
     // 返回成功 JSON
