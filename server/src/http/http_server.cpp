@@ -169,14 +169,15 @@ namespace {
     }
 
     // 清洗文件名，防止路径穿越
-    // 只保留字母、数字、点、横杠、下划线
+    // 只保留字母、数字、点、横杠、下划线、空格
     std::string sanitize_filename(const std::string &filename) {
         std::string result;
         result.reserve(filename.size());
         for (unsigned char ch: filename) {
-            if (std::isalnum(ch) || ch == '.' || ch == '-' || ch == '_') {
-                result.push_back(ch);
+            if (ch == '/' || ch == '\\' || ch < 0x20 || ch == 0x7F) {
+                continue;
             }
+            result.push_back(static_cast<char>(ch));
         }
 
         // 如果过滤后为空，给个默认文件名
