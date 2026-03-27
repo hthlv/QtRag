@@ -4,4 +4,6 @@ target_sources(${QTRAG_SERVER_TARGET}
         document_repository.cpp
         chunk_repository.h
         chunk_repository.cpp
+        embedding_repository.cpp
+        embedding_repository.h
 )

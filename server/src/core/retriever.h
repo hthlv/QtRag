@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <string>
 #include <vector>
+#include <mutex>
 struct sqlite3;
 class EmbeddingClient;
 class InMemoryVectorStore;
@@ -24,7 +25,8 @@ class Retriever {
 public:
     Retriever(const EmbeddingClient *embedding_client,
               const InMemoryVectorStore *vector_store,
-              sqlite3 *db);
+              sqlite3 *db,
+              std::mutex *db_mutex);
 
     // 根据 query 检索 tok-k chunks
     std::vector<RetrievedChunk> retrieve(const std::string &query,
@@ -34,4 +36,5 @@ private:
     const EmbeddingClient *embedding_client_;
     const InMemoryVectorStore *vector_store_;
     sqlite3 *db_;
+    std::mutex *db_mutex_;
 };

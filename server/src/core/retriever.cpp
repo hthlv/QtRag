@@ -9,9 +9,11 @@
 
 Retriever::Retriever(const EmbeddingClient *embedding_client,
                      const InMemoryVectorStore *vector_store,
-                     sqlite3 *db) : embedding_client_(embedding_client),
-                                    vector_store_(vector_store),
-                                    db_(db) {
+                     sqlite3 *db,
+                     std::mutex *db_mutex) : embedding_client_(embedding_client),
+                                             vector_store_(vector_store),
+                                             db_(db),
+                                             db_mutex_(db_mutex) {
 }
 
 std::vector<RetrievedChunk> Retriever::retrieve(const std::string &query, std::size_t top_k) const {
@@ -25,8 +27,10 @@ std::vector<RetrievedChunk> Retriever::retrieve(const std::string &query, std::s
     // 2. 去向量索引中检索
     const auto hits = vector_store_->search(query_embedding, top_k);
     // 3. 补全文档等信息
+    // 给数据库加锁保护
+    std::lock_guard<std::mutex> lock(*db_mutex_);
     DocumentRepository docRepo(db_);
-    for (const auto &hit : hits) {
+    for (const auto &hit: hits) {
         RetrievedChunk item;
         item.chunk_id = hit.chunk_id;
         item.doc_id = hit.doc_id;

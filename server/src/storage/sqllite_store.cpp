@@ -90,8 +90,20 @@ void SqlliteStore::initialize_schema() {
             FOREIGN KEY(doc_id) REFERENCES documents(id)
         );
     )";
+
+    const std::string create_chunk_embeddings_sql = R"(
+        CREATE TABLE IF NOT EXISTS chunk_embeddings (
+            chunk_id TEXT PRIMARY KEY,
+            doc_id TEXT NOT NULL,
+            content TEXT NOT NULL,
+            embedding TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+    )";
+
     execute(create_documents_sql);
     execute(create_chunks_sql);
+    execute(create_chunk_embeddings_sql);
 
     // 只要两张核心表就绪，后端原型就能接受健康检查和后续文档接入。
     log_info("Initialized schema");

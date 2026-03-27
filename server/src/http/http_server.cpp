@@ -11,8 +11,10 @@
 #include "core/prompt_builder.h"
 #include "models/document_record.h"
 #include "models/chunk_record.h"
+#include "models/embedding_record.h"
 #include "storage/repositories/document_repository.h"
 #include "storage/repositories/chunk_repository.h"
+#include "storage/repositories/embedding_repository.h"
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <iostream>
@@ -275,17 +277,20 @@ namespace {
     }
 }
 
-HttpServer::HttpServer(const std::string &address, unsigned short port, sqlite3 *db)
+HttpServer::HttpServer(const std::string &address, unsigned short port, sqlite3 *db, std::size_t worker_threads)
     : address_(address),
       port_(port),
       ioc_(1),
+      worker_pool_(worker_threads),
+      worker_threads_(worker_threads),
       db_(db),
       embedding_client_(std::make_unique<EmbeddingClient>()),
       vector_store_(std::make_unique<InMemoryVectorStore>()),
-      retriever_(std::make_unique<Retriever>(embedding_client_.get(), vector_store_.get(), db_)),
+      retriever_(std::make_unique<Retriever>(
+          embedding_client_.get(),
+          vector_store_.get(), db_, &db_mutex_)),
       prompt_builder_(std::make_unique<PromptBuilder>()),
       llm_client_(std::make_unique<LLMClient>()) {
-    // 当前 io_context 只配置一个执行线程，足够支撑最小原型。
 }
 
 HttpServer::~HttpServer() = default;
@@ -296,8 +301,25 @@ void HttpServer::run() {
     oss << "Starting server on " << address_ << ":" << port_ << "\n";
     log_info(oss.str());
 
-    // 当前版本不引入复杂的异步分发，直接进入同步 accept 循环。
     do_accept_loop();
+    worker_pool_.join();
+}
+
+void HttpServer::initialize_index_from_storage() {
+    // 启动阶段从数据库加载 embedding，恢复内存向量索引
+    std::lock_guard<std::mutex> lock(db_mutex_);
+    EmbeddingRepository embeddingRepo(db_);
+    auto records = embeddingRepo.list_all();
+    for (const auto &record: records) {
+        vector_store_->add(
+            record.chunk_id,
+            record.doc_id,
+            record.content,
+            record.embedding);
+    }
+    std::ostringstream oss;
+    oss << "Restored persisted vector index entries: " << records.size();
+    log_info(oss.str());
 }
 
 void HttpServer::do_accept_loop() {
@@ -310,9 +332,11 @@ void HttpServer::do_accept_loop() {
     for (;;) {
         tcp::socket socket{ioc_};
         acceptor.accept(socket);
-
-        // 当前实现一次处理一个连接，后续可以替换成线程池或协程模型。
-        handle_connection(std::move(socket));
+        // accept 线程只负责接收连接，真正的请求处理放进 worker 线程池执行
+        asio::post(worker_pool_, [this, socket = std::move(socket)]() mutable {
+            handle_connection(std::move(socket));
+        });
+        // handle_connection(std::move(socket));
     }
 }
 
@@ -429,41 +453,71 @@ HttpServer::Response HttpServer::handle_upload_document(const Request &req) {
     try {
         DocumentRepository docRepo(db_);
         ChunkRepository chunkRepo(db_);
-        // 1. 先插入 documents 表，状态记为 uploaded
-        DocumentRecord doc;
-        doc.id = doc_id;
-        doc.kb_id = kb_id;
-        doc.filename = safe_filename;
-        doc.file_path = file_path;
-        doc.status = "uploaded";
-        doc.chunk_count = 0;
-        doc.created_at = now;
-        doc.updated_at = now;
-        docRepo.insert(doc);
+        EmbeddingRepository embeddingRepo(db_);
 
-        // 2. 对文本进行切片
+        // 1. 切片
         Chunker chunker(800, 150);
         auto chunks = chunker.split(req.body());
-        // 3. 把切片结果写入 chunks 表
-        for (std::size_t i = 0; i < chunks.size(); ++i) {
+        // 2. 先在内存中准备好 chunk + embedding
+        struct PreparedChunk {
             ChunkRecord chunk;
-            chunk.id = doc_id + "_chunk_" + std::to_string(i);
-            chunk.doc_id = doc.id;
-            chunk.chunk_index = static_cast<int>(i);
-            chunk.content = chunks[i];
-            chunk.created_at = now;
-            // 写入数据库
-            chunkRepo.insert(chunk);
-            // 为 chunk 生成 embedding，并写入内存向量索引
-            const auto embedding = embedding_client_->embed(chunk.content);
-            vector_store_->add(
-                chunk.id,
-                chunk.doc_id,
-                chunk.content,
-                embedding);
+            std::vector<float> embedding;
+        };
+        std::vector<PreparedChunk> prepared_chunks;
+        prepared_chunks.reserve(chunks.size());
+        for (std::size_t i = 0; i < chunks.size(); ++i) {
+            PreparedChunk item;
+            item.chunk.id = doc_id + "_chunk_" + std::to_string(i);
+            item.chunk.doc_id = doc_id;
+            item.chunk.chunk_index = static_cast<int>(i);
+            item.chunk.content = chunks[i];
+            item.chunk.created_at = now;
+            // 先生成 embedding
+            item.embedding = embedding_client_->embed(item.chunk.content);
+            prepared_chunks.push_back(std::move(item));
         }
-        // 4. 更新文档状态会 indexed，并写入 chunk_count
-        docRepo.update_status_and_chunk_count(doc.id, "indexed", static_cast<int>(chunks.size()), current_timestamp());
+        // 3. 写数据库：documents / chunks / chunk_embeddings
+        {
+            std::lock_guard<std::mutex> lock(db_mutex_);
+            DocumentRecord doc;
+            doc.id = doc_id;
+            doc.kb_id = kb_id;
+            doc.filename = safe_filename;
+            doc.file_path = file_path;
+            doc.status = "uploaded";
+            doc.chunk_count = 0;
+            doc.created_at = now;
+            doc.updated_at = now;
+            docRepo.insert(doc);
+
+            for (const auto &item: prepared_chunks) {
+                // 写 chunk 表
+                chunkRepo.insert(item.chunk);
+                // 写 embedding 表，实现索引持久化
+                EmbeddingRecord embeddingRecord;
+                embeddingRecord.chunk_id = item.chunk.id;
+                embeddingRecord.doc_id = item.chunk.doc_id;
+                embeddingRecord.content = item.chunk.content;
+                embeddingRecord.embedding = item.embedding;
+                embeddingRecord.created_at = now;
+                embeddingRepo.insert_or_replace(embeddingRecord);
+            }
+            // 更新文档状态
+            docRepo.update_status_and_chunk_count(
+                doc_id,
+                "indexed",
+                static_cast<int>(prepared_chunks.size()),
+                current_timestamp());
+        }
+
+        // 4. 数据库写完后，再写入内存向量索引
+        for (const auto &item: prepared_chunks) {
+            vector_store_->add(
+                item.chunk.id,
+                item.chunk.doc_id,
+                item.chunk.content,
+                item.embedding);
+        }
 
         // 5. 返回成功响应
         std::ostringstream oss;
@@ -498,8 +552,12 @@ HttpServer::Response HttpServer::handle_upload_document(const Request &req) {
 
 HttpServer::Response HttpServer::handle_list_documents(const Request &req) {
     try {
-        DocumentRepository repo(db_);
-        auto docs = repo.list_all();
+        std::vector<DocumentRecord> docs;
+        {
+            std::lock_guard<std::mutex> lock(db_mutex_);
+            DocumentRepository repo(db_);
+            docs = repo.list_all();
+        }
         return make_json_response(
             req.version(),
             http::status::ok,
