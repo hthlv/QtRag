@@ -4,6 +4,10 @@
 
 #include "main_window.h"
 #include "pages/document_page.h"
+#include "models/session_record.h"
+#include "models/message_record.h"
+#include "storage/repositories/session_repository.h"
+#include "storage/repositories/message_repository.h"
 #include <QMenuBar>
 #include <QMenu>
 #include <QAction>
@@ -23,17 +27,37 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QUrl>
+#include <QTextCursor>
+#include <QDateTime>
+#include <QSqlDatabase>
+#include <QUuid>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent),
       networkManager_(new QNetworkAccessManager(this)) {
+    // 先初始化本地 repository
+    initializeLocalRepositories();
     // 构造阶段只做界面搭建和基础窗口设置，不放业务逻辑。
     setupUi();
     setupMenu();
     setWindowTitle("QtRAG Client");
     resize(1200, 800);
     statusBar()->showMessage("就绪");
+    // 启动时加载本地会话
+    loadSessionsFromLocal();
+    // 如果本地没有会话，就自动创建一个
+    if (leftList_->count() == 0) {
+        createNewSession();
+    } else {
+        auto *item = leftList_->item(0);
+        leftList_->setCurrentItem(item);
+        switchToSession(item->data(Qt::UserRole).toString());
+    }
 }
+
+MainWindow::~MainWindow() {
+}
+
 
 void MainWindow::setupUi() {
     auto *central = new QWidget(this);
@@ -44,12 +68,15 @@ void MainWindow::setupUi() {
     // 左侧面板用于展示知识库和会话列表。
     auto *leftPanel = new QWidget(this);
     auto *leftLayout = new QVBoxLayout(leftPanel);
-    leftLayout->addWidget(new QLabel("知识库 / 会话", this));
+    leftLayout->addWidget(new QLabel("会话", this));
     leftList_ = new QListWidget(this);
-    leftList_->addItem("默认知识库");
-    leftList_->addItem("会话 1");
-    leftList_->addItem("会话 2");
     leftLayout->addWidget(leftList_);
+    // 点击某个会话时，切换并加载本地历史消息
+    connect(leftList_, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
+        if (!item) return;
+        QString sessionId = item->data(Qt::UserRole).toString();
+        switchToSession(sessionId);
+    });
 
     // 中间区域展示聊天记录，并提供输入框和发送按钮。
     auto *centerPanel = new QWidget(this);
@@ -92,9 +119,18 @@ void MainWindow::setupUi() {
             QMessageBox::information(this, "提示", "请输入问题");
             return;
         }
+        // 如果当前还没有会话，就先创建一个
+        if (currentSessionId_.isEmpty()) {
+            createNewSession();
+        }
         // 先在聊天区显示用户消息
-        chatView_->append("User: " + text + "\n\n");
+        chatView_->append("User: " + text);
+        chatView_->append("");
+        // 把用户消息保存到本地数据库
+        saveMessageToLocal("user", text, "done");
         inputEdit_->clear();
+        // 重置当前 AI 流式缓存
+        currentAiMessageBuffer_.clear();
         // 发送网络请求
         // sendChatRequest(text);
         // 发送 SSE 流式请求
@@ -118,7 +154,7 @@ void MainWindow::setupMenu() {
         QMessageBox::information(this, "设置", "Day 1 占位：后续实现设置页");
     });
     connect(actionNewSession, &QAction::triggered, this, [this]() {
-        leftList_->addItem("新会话");
+        createNewSession();
     });
 }
 
@@ -313,6 +349,13 @@ void MainWindow::processSseEventBlock(const QString &block) {
             chatView_->moveCursor(QTextCursor::End);
             chatView_->insertPlainText("\n\n");
         }
+        //把本轮 AI 最终回答保存在本地数据库
+        if (!currentAiMessageBuffer_.isEmpty()) {
+            saveMessageToLocal("assistant", currentAiMessageBuffer_, "done");
+            currentAiMessageBuffer_.clear();
+        }
+        // 重置标记，便于下一轮流式输出
+        aiMessageStarted_ = false;
         statusBar()->showMessage("回答完成");
         return;
     }
@@ -339,6 +382,8 @@ void MainWindow::appendAiStreamText(const QString &text) {
     }
     // 逐步追加文本
     chatView_->insertPlainText(text);
+    // 同时缓存整段 AI 消息，done 时落库
+    currentAiMessageBuffer_ += text;
     // 保证滚动条始终跟到底部
     chatView_->moveCursor(QTextCursor::End);
 }
@@ -359,5 +404,97 @@ void MainWindow::renderReferencesFromArray(const QJsonArray &refs) {
                 .arg(score, 0, 'f', 3)
                 .arg(text.left(120));
         referenceList_->addItem(itemText);
+    }
+}
+
+void MainWindow::initializeLocalRepositories() {
+    // 从 Qt 全局连接池中取出初始化好的数据库连接
+    db_ = QSqlDatabase::database("qtrag_connection");
+    sessionRepo_ = std::make_unique<SessionRepository>(db_);
+    messageRepo_ = std::make_unique<MessageRepository>(db_);
+}
+
+void MainWindow::loadSessionsFromLocal() {
+    leftList_->clear();
+    auto sessions = sessionRepo_->list_all();
+    for (const auto &session: sessions) {
+        auto *item = new QListWidgetItem(session.title);
+        item->setData(Qt::UserRole, session.id);
+        leftList_->addItem(item);
+    }
+}
+
+void MainWindow::createNewSession() {
+    SessionRecord session;
+    session.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    session.title = "新会话 " + QDateTime::currentDateTime().toString("MM-dd HH:mm:ss");
+    session.kb_id = "default";
+    session.created_at = QDateTime::currentSecsSinceEpoch();
+    session.updated_at = QDateTime::currentSecsSinceEpoch();
+    if (!sessionRepo_->insert(session)) {
+        QMessageBox::warning(this, "错误", "创建会话失败");
+        return;
+    }
+    loadSessionsFromLocal();
+    // 切换到刚创建的新会话
+    currentSessionId_ = session.id;
+    chatView_->clear();
+    for (int i = 0; i < leftList_->count(); ++i) {
+        auto *item = leftList_->item(i);
+        if (item->data(Qt::UserRole).toString() == currentSessionId_) {
+            leftList_->setCurrentItem(item);
+            break;
+        }
+    }
+}
+
+void MainWindow::switchToSession(const QString &sessionId) {
+    if (sessionId.isEmpty()) {
+        return;
+    }
+    currentSessionId_ = sessionId;
+    loadMessageForSession(sessionId);
+    statusBar()->showMessage("已切换会话");
+}
+
+void MainWindow::loadMessageForSession(const QString &sessionId) {
+    chatView_->clear();
+    auto messages = messageRepo_->list_by_session_id(sessionId);
+    for (const auto &msg: messages) {
+        if (msg.role == "user") {
+            chatView_->append("User: " + msg.content);
+        } else {
+            chatView_->append("AI: " + msg.content);
+        }
+        chatView_->append("");
+    }
+}
+
+void MainWindow::saveMessageToLocal(const QString &role,
+                                    const QString &content,
+                                    const QString &status) {
+    if (currentSessionId_.isEmpty()) {
+        return;
+    }
+    MessageRecord message;
+    message.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    message.session_id = currentSessionId_;
+    message.role = role;
+    message.content = content;
+    message.status = status;
+    message.created_at = QDateTime::currentSecsSinceEpoch();
+    messageRepo_->insert(message);
+    // 同时更新会话的 updated_at，让最近活跃会话排在前面
+    sessionRepo_->touch(currentSessionId_, QDateTime::currentSecsSinceEpoch());
+    // 重新加载会话列表，让排序生效
+    QString keepSessionId = currentSessionId_;
+    loadSessionsFromLocal();
+    // 恢复当前选中项
+    for (int i = 0; i < leftList_->count(); ++i) {
+        auto *item = leftList_->item(i);
+        if (item->data(Qt::UserRole).toString() == keepSessionId) {
+            leftList_->setCurrentItem(item);
+            break;
+        }
     }
 }

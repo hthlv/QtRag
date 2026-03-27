@@ -23,6 +23,9 @@ public:
     // 按 ID 查询会话，不存在时返回空。
     std::optional<SessionRecord> find_by_id(const QString &id);
 
+    // 更新会话更新时间
+    bool touch(const QString &id, qint64 updatedAt);
+
 private:
     // 当前仓储使用的数据库连接。
     QSqlDatabase db_;

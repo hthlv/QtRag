@@ -84,3 +84,19 @@ std::optional<SessionRecord> SessionRepository::find_by_id(const QString &id) {
     }
     return std::nullopt;
 }
+
+bool SessionRepository::touch(const QString &id, qint64 updatedAt) {
+    QSqlQuery query(db_);
+    query.prepare(R"(
+        UPDATE sessions
+        SET updated_at = ?
+        WHERE id = ?
+    )");
+    query.addBindValue(updatedAt);
+    query.addBindValue(id);
+    if (!query.exec()) {
+        qWarning() << "touch session failed:" << query.lastError().text();
+        return false;
+    }
+    return true;
+}

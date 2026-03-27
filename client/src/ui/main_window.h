@@ -4,12 +4,15 @@
 
 #pragma once
 #include <QMainWindow>
+#include <QSqlDatabase>
 class QListWidget;
 class QTextEdit;
 class QPushButton;
 class QLabel;
 class QNetworkAccessManager;
 class QNetworkReply;
+class SessionRepository;
+class MessageRepository;
 
 // 主窗口负责组织左侧知识库/会话区、中间聊天区和右侧引用区。
 class MainWindow : public QMainWindow {
@@ -18,7 +21,7 @@ class MainWindow : public QMainWindow {
 public:
     // parent 交给 Qt 父子对象系统管理，默认作为顶层窗口使用。
     explicit MainWindow(QWidget *parent = nullptr);
-
+    ~MainWindow();
 private:
     // 创建主界面的布局和控件。
     void setupUi();
@@ -49,6 +52,27 @@ private:
     // 渲染引用列表
     void renderReferencesFromArray(const QJsonArray &refs);
 
+    // 本地会话和消息管理
+    // 初始化本地仓库
+    void initializeLocalRepositories();
+
+    // 从本地读取会话
+    void loadSessionsFromLocal();
+
+    // 创建新会话
+    void createNewSession();
+
+    // 切换会话
+    void switchToSession(const QString &sessionId);
+
+    // 读取会话消息
+    void loadMessageForSession(const QString &sessionId);
+
+    // 保存消息到本地
+    void saveMessageToLocal(const QString &role,
+                            const QString &content,
+                            const QString &status = "done");
+
 private:
     // 左侧列表同时承载知识库和会话的占位数据。
     QListWidget *leftList_{nullptr};
@@ -64,11 +88,20 @@ private:
     bool is_connected_{false};
     // HTTP 网络管理器
     QNetworkAccessManager *networkManager_{nullptr};
-    QNetworkReply* currentReply_{nullptr};
+    QNetworkReply *currentReply_{nullptr};
     // 用于缓存尚未解析完成的 SSE 文本
     QByteArray sseBuffer_;
     // 标记当前这轮 AI 回答是否已经开始显示
     bool aiMessageStarted_{false};
+
+    // 本地数据库和 repository
+    QSqlDatabase db_;
+    std::unique_ptr<SessionRepository> sessionRepo_;
+    std::unique_ptr<MessageRepository> messageRepo_;
+    // 当前会话 id
+    QString currentSessionId_;
+    // 当前流式 AI 消息的完整缓存，done 时落库
+    QString currentAiMessageBuffer_;
 
     QString serverBaseUrl_{"http://127.0.0.1:8080"};
 };
