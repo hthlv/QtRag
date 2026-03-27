@@ -4,10 +4,12 @@
 
 #include "main_window.h"
 #include "pages/document_page.h"
+#include "pages/settings_dialog.h"
 #include "models/session_record.h"
 #include "models/message_record.h"
 #include "storage/repositories/session_repository.h"
 #include "storage/repositories/message_repository.h"
+#include "storage/repositories/settings_repository.h"
 #include <QMenuBar>
 #include <QMenu>
 #include <QAction>
@@ -90,6 +92,10 @@ void MainWindow::setupUi() {
     inputEdit_ = new QTextEdit(this);
     inputEdit_->setPlaceholderText("请输入你的问题...");
     inputEdit_->setFixedHeight(100);
+    inputEdit_->setAcceptRichText(false);
+    inputEdit_->setFocusPolicy(Qt::StrongFocus);
+    inputEdit_->setAttribute(Qt::WA_InputMethodEnabled, true);
+    inputEdit_->setInputMethodHints(Qt::ImhMultiLine);
     sendButton_ = new QPushButton("发送", this);
     inputLayout->addWidget(inputEdit_, 1);
     inputLayout->addWidget(sendButton_);
@@ -111,6 +117,7 @@ void MainWindow::setupUi() {
     splitter->setStretchFactor(1, 3);
     splitter->setStretchFactor(2, 1);
     rootLayout->addWidget(splitter);
+    inputEdit_->setFocus();
 
     // 点击发送
     connect(sendButton_, &QPushButton::clicked, this, [this]() {
@@ -151,7 +158,12 @@ void MainWindow::setupMenu() {
         page.exec();
     });
     connect(actionSettings, &QAction::triggered, this, [this]() {
-        QMessageBox::information(this, "设置", "Day 1 占位：后续实现设置页");
+        SettingsDialog dialog(settingsRepo_.get(), this);
+        if (dialog.exec() == QDialog::Accepted) {
+            // 保存成功后重新加载配置
+            loadSettingsFromLocal();
+            statusBar()->showMessage("设置已更新");
+        }
     });
     connect(actionNewSession, &QAction::triggered, this, [this]() {
         createNewSession();
@@ -280,7 +292,12 @@ void MainWindow::sendChatStreamRequest(const QString &query) {
         }
         // 如果网络层面报错，需要提示
         if (currentReply_->error() != QNetworkReply::NoError) {
-            QMessageBox::warning(this, "流式请求失败", currentReply_->errorString());
+            QByteArray errorBody = currentReply_->readAll();
+            QString detail = currentReply_->errorString();
+            if (!errorBody.isEmpty()) {
+                detail += "\n\n服务端返回：\n" + QString::fromUtf8(errorBody);
+            }
+            QMessageBox::warning(this, "流式请求失败", detail);
             statusBar()->showMessage("流式请求失败");
         } else {
             statusBar()->showMessage("流式请求结束");
@@ -412,11 +429,26 @@ void MainWindow::initializeLocalRepositories() {
     db_ = QSqlDatabase::database("qtrag_connection");
     sessionRepo_ = std::make_unique<SessionRepository>(db_);
     messageRepo_ = std::make_unique<MessageRepository>(db_);
+    settingsRepo_ = std::make_unique<SettingsRepository>(db_);
+    // 启动加载设置
+    loadSettingsFromLocal();
+}
+
+void MainWindow::loadSettingsFromLocal() {
+    if (!settingsRepo_) {
+        return;
+    }
+    auto value = settingsRepo_->getValue("server_url");
+    if (value.has_value() && !value->trimmed().isEmpty()) {
+        serverBaseUrl_ = *value;
+    } else {
+        serverBaseUrl_ = "http://127.0.0.1:8080";
+    }
 }
 
 void MainWindow::loadSessionsFromLocal() {
     leftList_->clear();
-    auto sessions = sessionRepo_->list_all();
+    auto sessions = sessionRepo_->listAll();
     for (const auto &session: sessions) {
         auto *item = new QListWidgetItem(session.title);
         item->setData(Qt::UserRole, session.id);
@@ -459,7 +491,7 @@ void MainWindow::switchToSession(const QString &sessionId) {
 
 void MainWindow::loadMessageForSession(const QString &sessionId) {
     chatView_->clear();
-    auto messages = messageRepo_->list_by_session_id(sessionId);
+    auto messages = messageRepo_->listBySessionId(sessionId);
     for (const auto &msg: messages) {
         if (msg.role == "user") {
             chatView_->append("User: " + msg.content);

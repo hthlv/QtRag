@@ -2,17 +2,17 @@
 // Created by hyp on 2026/3/26.
 //
 
-#include "setting_repository.h"
+#include "settings_repository.h"
 #include <QSqlQuery>
 #include <QSqlError>
 #include <QVariant>
 #include <QDebug>
 
-SettingRepository::SettingRepository(const QSqlDatabase &db)
+SettingsRepository::SettingsRepository(const QSqlDatabase &db)
     :db_(db){
 }
 
-bool SettingRepository::set_value(const QString &key, const QString &value) {
+bool SettingsRepository::setValue(const QString &key, const QString &value) {
     // 利用 ON CONFLICT 做 UPSERT，避免先查后改。
     QSqlQuery query(db_);
     query.prepare(R"(
@@ -29,7 +29,7 @@ bool SettingRepository::set_value(const QString &key, const QString &value) {
     return true;
 }
 
-std::optional<QString> SettingRepository::get_value(const QString &key) {
+std::optional<QString> SettingsRepository::getValue(const QString &key) {
     QSqlQuery query(db_);
 
     // 按 key 精确查询一条配置值。

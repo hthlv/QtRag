@@ -31,7 +31,7 @@ bool MessageRepository::insert(const MessageRecord &message) {
     return true;
 }
 
-QVector<MessageRecord> MessageRepository::list_by_session_id(const QString &sessionId) {
+QVector<MessageRecord> MessageRepository::listBySessionId(const QString &sessionId) {
     QSqlQuery query(db_);
     QVector<MessageRecord> result;
 

@@ -2,4 +2,6 @@ target_sources(${QTRAG_CLIENT_TARGET}
     PRIVATE
         document_page.cpp
         document_page.h
+        settings_dialog.cpp
+        settings_dialog.h
 )

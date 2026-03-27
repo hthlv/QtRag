@@ -12,7 +12,19 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Sql Network)
+set(QTRAG_CLIENT_QT_MAJOR "auto" CACHE STRING "Qt major version for client: auto, 5, or 6")
+set_property(CACHE QTRAG_CLIENT_QT_MAJOR PROPERTY STRINGS auto 5 6)
+
+if(QTRAG_CLIENT_QT_MAJOR STREQUAL "5")
+    set(_qtrag_client_qt_candidates Qt5)
+elseif(QTRAG_CLIENT_QT_MAJOR STREQUAL "6")
+    set(_qtrag_client_qt_candidates Qt6)
+else()
+    set(_qtrag_client_qt_candidates Qt6 Qt5)
+endif()
+
+find_package(QT NAMES ${_qtrag_client_qt_candidates} REQUIRED COMPONENTS Widgets Sql Network)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets Sql Network)
 
 set(QTRAG_CLIENT_TARGET QtRagClient)
 
@@ -34,9 +46,9 @@ target_include_directories(${QTRAG_CLIENT_TARGET}
 
 target_link_libraries(${QTRAG_CLIENT_TARGET}
     PRIVATE
-        Qt6::Widgets
-        Qt6::Sql
-        Qt6::Network
+        Qt${QT_VERSION_MAJOR}::Widgets
+        Qt${QT_VERSION_MAJOR}::Sql
+        Qt${QT_VERSION_MAJOR}::Network
 )
 
 set_target_properties(${QTRAG_CLIENT_TARGET} PROPERTIES

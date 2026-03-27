@@ -18,10 +18,10 @@ public:
     bool insert(const SessionRecord &session);
 
     // 获取全部会话，按更新时间倒序。
-    QVector<SessionRecord> list_all();
+    QVector<SessionRecord> listAll();
 
     // 按 ID 查询会话，不存在时返回空。
-    std::optional<SessionRecord> find_by_id(const QString &id);
+    std::optional<SessionRecord> findById(const QString &id);
 
     // 更新会话更新时间
     bool touch(const QString &id, qint64 updatedAt);

@@ -14,10 +14,10 @@ public:
     explicit DocumentRepository(const QSqlDatabase& db);
 
     // 插入或覆盖文档记录（主键冲突时更新整行）。
-    bool insert_or_replace(const DocumentRecord &doc);
+    bool insertOrReplace(const DocumentRecord &doc);
 
     // 查询全部文档，按创建时间倒序。
-    QVector<DocumentRecord> list_all();
+    QVector<DocumentRecord> listAll();
 
 private:
     // 当前仓储使用的数据库连接。

@@ -13,6 +13,7 @@ class QNetworkAccessManager;
 class QNetworkReply;
 class SessionRepository;
 class MessageRepository;
+class SettingsRepository;
 
 // 主窗口负责组织左侧知识库/会话区、中间聊天区和右侧引用区。
 class MainWindow : public QMainWindow {
@@ -21,7 +22,9 @@ class MainWindow : public QMainWindow {
 public:
     // parent 交给 Qt 父子对象系统管理，默认作为顶层窗口使用。
     explicit MainWindow(QWidget *parent = nullptr);
+
     ~MainWindow();
+
 private:
     // 创建主界面的布局和控件。
     void setupUi();
@@ -55,6 +58,8 @@ private:
     // 本地会话和消息管理
     // 初始化本地仓库
     void initializeLocalRepositories();
+
+    void loadSettingsFromLocal();
 
     // 从本地读取会话
     void loadSessionsFromLocal();
@@ -98,6 +103,7 @@ private:
     QSqlDatabase db_;
     std::unique_ptr<SessionRepository> sessionRepo_;
     std::unique_ptr<MessageRepository> messageRepo_;
+    std::unique_ptr<SettingsRepository> settingsRepo_;
     // 当前会话 id
     QString currentSessionId_;
     // 当前流式 AI 消息的完整缓存，done 时落库

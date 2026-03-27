@@ -12,7 +12,7 @@ DocumentRepository::DocumentRepository(const QSqlDatabase &db)
     :db_(db){
 }
 
-bool DocumentRepository::insert_or_replace(const DocumentRecord &doc) {
+bool DocumentRepository::insertOrReplace(const DocumentRecord &doc) {
     // 通过 INSERT OR REPLACE 简化主键冲突处理。
     QSqlQuery query(db_);
     query.prepare(R"(
@@ -32,7 +32,7 @@ bool DocumentRepository::insert_or_replace(const DocumentRecord &doc) {
     return true;
 }
 
-QVector<DocumentRecord> DocumentRepository::list_all() {
+QVector<DocumentRecord> DocumentRepository::listAll() {
     QSqlQuery query(db_);
     QVector<DocumentRecord> result;
 

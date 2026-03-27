@@ -31,7 +31,7 @@ bool SessionRepository::insert(const SessionRecord &session) {
     return true;
 }
 
-QVector<SessionRecord> SessionRepository::list_all() {
+QVector<SessionRecord> SessionRepository::listAll() {
     QSqlQuery query(db_);
     QVector<SessionRecord> result;
 
@@ -56,7 +56,7 @@ QVector<SessionRecord> SessionRepository::list_all() {
     return result;
 }
 
-std::optional<SessionRecord> SessionRepository::find_by_id(const QString &id) {
+std::optional<SessionRecord> SessionRepository::findById(const QString &id) {
     QSqlQuery query(db_);
 
     // 精确查询一条会话记录。

@@ -17,7 +17,7 @@ public:
     bool insert(const MessageRecord &message);
 
     // 按会话 ID 获取消息列表，按创建时间升序。
-    QVector<MessageRecord> list_by_session_id(const QString &sessionId);
+    QVector<MessageRecord> listBySessionId(const QString &sessionId);
 
 private:
     // 当前仓储使用的数据库连接。
