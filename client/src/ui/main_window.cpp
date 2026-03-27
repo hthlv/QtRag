@@ -85,7 +85,7 @@ void MainWindow::setupUi() {
     splitter->setStretchFactor(2, 1);
     rootLayout->addWidget(splitter);
 
-    // 这里先做最小可交互闭环：用户发送后把文本追加到聊天窗口。
+    // 点击发送
     connect(sendButton_, &QPushButton::clicked, this, [this]() {
         auto text = inputEdit_->toPlainText().trimmed();
         if (text.isEmpty()) {
@@ -93,10 +93,12 @@ void MainWindow::setupUi() {
             return;
         }
         // 先在聊天区显示用户消息
-        chatView_->append("User: " + text);
+        chatView_->append("User: " + text + "\n\n");
         inputEdit_->clear();
         // 发送网络请求
-        sendChatRequest(text);
+        // sendChatRequest(text);
+        // 发送 SSE 流式请求
+        sendChatStreamRequest(text);
     });
 }
 
@@ -186,6 +188,169 @@ void MainWindow::renderReferences(const QByteArray &jsonData) {
     }
     for (const auto &ref: refs) {
         QJsonObject obj = ref.toObject();
+        QString filename = obj.value("filename").toString();
+        double score = obj.value("score").toDouble();
+        QString text = obj.value("text").toString();
+        QString itemText = QString("[%1] score=%2\n%3")
+                .arg(filename.isEmpty() ? "unknown" : filename)
+                .arg(score, 0, 'f', 3)
+                .arg(text.left(120));
+        referenceList_->addItem(itemText);
+    }
+}
+
+void MainWindow::sendChatStreamRequest(const QString &query) {
+    // 如果上一次请求还没结束，先拒绝重复发送
+    if (currentReply_ != nullptr) {
+        QMessageBox::information(this, "提示", "当前还有请求正在处理");
+        return;
+    }
+    // 清空本轮流式状态
+    sseBuffer_.clear();
+    aiMessageStarted_ = false;
+    referenceList_->clear();
+    referenceList_->addItem("正在等待引用片段");
+    QUrl url(serverBaseUrl_ + "/api/v1/chat/stream");
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "text/plain; charset=utf-8");
+    request.setRawHeader("X-Top-K", "3");
+    sendButton_->setEnabled(false);
+    statusBar()->showMessage("正在流式请求服务端");
+    currentReply_ = networkManager_->post(request, query.toUtf8());
+    // readyRead: 每来一条数据就读出来
+    connect(currentReply_, &QNetworkReply::readyRead, this, [this]() {
+        if (!currentReply_) {
+            return;
+        }
+        // 只读取当前已到达的数据，未到达的内容继续留给后续 readyRead 处理。
+        QByteArray chunk = currentReply_->readAll();
+        // 为了更好解析 SSE，这里把 CRLF 统一转成 LF
+        chunk.replace("\r\n", "\n");
+        // SSE 事件可能跨多个网络包，因此先进入缓冲区，再按事件边界解析。
+        sseBuffer_.append(chunk);
+        processSseBuffer();
+    });
+    // finished: 请求结束时做收尾
+    connect(currentReply_, &QNetworkReply::finished, this, [this]() {
+        if (!currentReply_) {
+            return;
+        }
+        // 再读一次，防止还有尾部数据没处理
+        QByteArray tail = currentReply_->readAll();
+        tail.replace("\r\n", "\n");
+        if (!tail.isEmpty()) {
+            sseBuffer_.append(tail);
+            processSseBuffer();
+        }
+        // 如果网络层面报错，需要提示
+        if (currentReply_->error() != QNetworkReply::NoError) {
+            QMessageBox::warning(this, "流式请求失败", currentReply_->errorString());
+            statusBar()->showMessage("流式请求失败");
+        } else {
+            statusBar()->showMessage("流式请求结束");
+        }
+        currentReply_->deleteLater();
+        currentReply_ = nullptr;
+        sendButton_->setEnabled(true);
+    });
+}
+
+void MainWindow::processSseBuffer() {
+    // SSE 事件之间用空行分隔，即 "\n\n"
+    while (true) {
+        int pos = sseBuffer_.indexOf("\n\n");
+        if (pos < 0) {
+            break;
+        }
+        QByteArray block = sseBuffer_.left(pos);
+        sseBuffer_.remove(0, pos + 2);
+        if (!block.trimmed().isEmpty()) {
+            processSseEventBlock(QString::fromUtf8(block));
+        }
+    }
+}
+
+void MainWindow::processSseEventBlock(const QString &block) {
+    QString eventName;
+    QString dataLine;
+    const QStringList lines = block.split('\n', Qt::SkipEmptyParts);
+    // 解析 event 和 data
+    for (const QString &line: lines) {
+        if (line.startsWith("event:")) {
+            eventName = line.mid(QString("event:").size()).trimmed();
+        } else if (line.startsWith("data:")) {
+            dataLine = line.mid(QString("data:").size()).trimmed();
+        }
+    }
+    if (eventName.isEmpty()) {
+        return;
+    }
+    // token 事件：追加回答文本
+    if (eventName == "token") {
+        QJsonParseError parseError;
+        QJsonDocument doc = QJsonDocument::fromJson(dataLine.toUtf8(), &parseError);
+        if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+            return;
+        }
+        QString content = doc.object().value("content").toString();
+        appendAiStreamText(content);
+        return;
+    }
+    if (eventName == "refs") {
+        QJsonParseError parseError;
+        QJsonDocument doc = QJsonDocument::fromJson(dataLine.toUtf8(), &parseError);
+        if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+            return;
+        }
+        QJsonArray refs = doc.object().value("references").toArray();
+        renderReferencesFromArray(refs);
+        return;
+    }
+    // done 事件：本轮结束
+    if (eventName == "done") {
+        // 给 AI 回答补两个换行，便于下一轮显示
+        if (aiMessageStarted_) {
+            chatView_->moveCursor(QTextCursor::End);
+            chatView_->insertPlainText("\n\n");
+        }
+        statusBar()->showMessage("回答完成");
+        return;
+    }
+    // error 事件：服务端逻辑错误
+    if (eventName == "error") {
+        QJsonParseError parseError;
+        QJsonDocument doc = QJsonDocument::fromJson(dataLine.toUtf8(), &parseError);
+        QString message = "未知错误";
+        if (parseError.error == QJsonParseError::NoError && doc.isObject()) {
+            message = doc.object().value("message").toString(message);
+        }
+        QMessageBox::warning(this, "服务端错误", message);
+        statusBar()->showMessage("服务端返回错误");
+        return;
+    }
+}
+
+void MainWindow::appendAiStreamText(const QString &text) {
+    chatView_->moveCursor(QTextCursor::End);
+    // 第一次收到 token 时，先输出 AI：
+    if (!aiMessageStarted_) {
+        chatView_->insertPlainText("AI: ");
+        aiMessageStarted_ = true;
+    }
+    // 逐步追加文本
+    chatView_->insertPlainText(text);
+    // 保证滚动条始终跟到底部
+    chatView_->moveCursor(QTextCursor::End);
+}
+
+void MainWindow::renderReferencesFromArray(const QJsonArray &refs) {
+    referenceList_->clear();
+    if (refs.isEmpty()) {
+        referenceList_->addItem("无引用片段");
+        return;
+    }
+    for (const auto &value: refs) {
+        QJsonObject obj = value.toObject();
         QString filename = obj.value("filename").toString();
         double score = obj.value("score").toDouble();
         QString text = obj.value("text").toString();
