@@ -50,6 +50,10 @@ private:
 
     // 非流式 chat 接口
     Response handle_chat(const Request &req);
+
+    // SSE 流式 chat
+    void handle_chat_stream(boost::asio::ip::tcp::socket &socket, const Request &req);
+
 private:
     // 监听绑定的 IP 地址字符串。
     std::string address_;

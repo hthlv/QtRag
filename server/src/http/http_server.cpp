@@ -219,6 +219,60 @@ namespace {
         oss << "]}";
         return oss.str();
     }
+
+    // 将 references 单独拼成 JSON，供 SSE refs 事件使用
+    std::string build_references_json(const std::vector<RetrievedChunk> &refs) {
+        std::ostringstream oss;
+        oss << R"({"references":[)";
+        for (std::size_t i = 0; i < refs.size(); ++i) {
+            const auto &item = refs[i];
+            if (i > 0) {
+                oss << ",";
+            }
+            oss << "{"
+                    << R"("chunk_id":")" << escape_json(item.chunk_id) << "\","
+                    << R"("doc_id":")" << escape_json(item.doc_id) << "\","
+                    << R"("filename":")" << escape_json(item.filename) << "\","
+                    << R"("score":)" << item.score << ","
+                    << R"("text":")" << escape_json(item.text) << "\""
+                    << "}";
+        }
+        oss << "]}";
+        return oss.str();
+    }
+
+    // 写 SSE 响应头
+    void write_sse_headers(tcp::socket &socket, unsigned version) {
+        http::response<http::empty_body> res{http::status::ok, version};
+        // SSE 必备响应头
+        res.set(http::field::server, "QtRAG-Server");
+        res.set(http::field::content_type, "text/event-stream; charset=utf-8");
+        res.set(http::field::cache_control, "no-cache");
+        res.set(http::field::connection, "close");
+        // 使用 chunked 传输，便于持续输出
+        res.chunked(true);
+        http::serializer<false, http::empty_body> sr{res};
+        http::write_header(socket, sr);
+    }
+
+    // 向客户端发送一个 SSE 事件
+    void write_sse_event(tcp::socket &socket,
+                         const std::string &event_name,
+                         const std::string &data_json) {
+        // SSE 标准格式：
+        // event: xxx
+        // data: yyy
+        std::string payload =
+                "event: " + event_name + "\n" +
+                "data: " + data_json + "\n\n";
+        // 以 chunk 的方式发送
+        asio::write(socket, http::make_chunk(asio::buffer(payload)));
+    }
+
+    // 发送 SSE 结束块
+    void write_sse_end(tcp::socket &socket) {
+        asio::write(socket, http::make_chunk_last());
+    }
 }
 
 HttpServer::HttpServer(const std::string &address, unsigned short port, sqlite3 *db)
@@ -272,8 +326,17 @@ void HttpServer::handle_connection(tcp::socket socket) {
         std::ostringstream oss;
         oss << "Incoming request: " << method_to_string(req.method()) << " " << req.target();
         log_info(oss.str());
-        auto res = handle_request(req);
 
+        // 流式接口单独处理
+        if (req.method() == http::verb::post && req.target() == "/api/v1/chat/stream") {
+            handle_chat_stream(socket, req);
+            beast::error_code ec;
+            socket.shutdown(tcp::socket::shutdown_send, ec);
+            return;
+        }
+
+        // 其他请求仍走普通分发逻辑
+        auto res = handle_request(req);
         // 先把响应完整写回，再主动关闭发送方向。
         http::write(socket, res);
         beast::error_code ec;
@@ -507,5 +570,60 @@ HttpServer::Response HttpServer::handle_chat(const Request &req) {
             req.version(),
             http::status::internal_server_error,
             R"({"error":"chat failed"})");
+    }
+}
+
+void HttpServer::handle_chat_stream(boost::asio::ip::tcp::socket &socket,
+                                    const Request &req) {
+    // 1. 请求体直接就是 query 文本
+    // 2. X-Top-K 指定检索数量，默认 3
+    const std::string query = req.body();
+    const std::size_t top_k = parse_top_k(req, 3);
+    try {
+        // 先写 SSE 响应头
+        write_sse_headers(socket, req.version());
+        // query 为空时，直接发 error + done
+        if (query.empty()) {
+            write_sse_event(socket, "error", R"({"message":"empty query"})");
+            write_sse_event(socket, "done", R"({})");
+            write_sse_end(socket);
+            return;
+        }
+
+        // 1. 检索知识片段
+        auto refs = retriever_->retrieve(query, top_k);
+        // 2. 构造 prompt
+        std::string prompt = prompt_builder_->build(query, refs);
+        // 3. 流式生成回答
+        llm_client_->stream_generate(
+            query,
+            refs,
+            prompt,
+            [&](const std::string &piece) {
+                // 每一段回答都通过 token 事件发给客户端
+                std::ostringstream oss;
+                // 这里拼的是单个 token 事件对应的 JSON 负载，不是完整 SSE 帧。
+                oss << R"({"content":")" << escape_json(piece) << "\"}";
+                write_sse_event(socket, "token", oss.str());
+            });
+        // 4. 回答发完后，把引用片段单独发给客户端
+        write_sse_event(socket, "refs", build_references_json(refs));
+        // 5. 最后发送 done 事件
+        write_sse_event(socket, "done", R"({})");
+        // 6. 发送结束块
+        write_sse_end(socket);
+    } catch (const std::exception &ex) {
+        log_error(std::string("chat stream failed: ") + ex.what());
+        try {
+            // 即使出错，也尽量给客户端一个 SSE error 事件
+            write_sse_headers(socket, req.version());
+            std::ostringstream oss;
+            oss << R"({"message":")" << escape_json(ex.what()) << "\"}";
+            write_sse_event(socket, "error", oss.str());
+            write_sse_event(socket, "done", R"({})");
+            write_sse_end(socket);
+        } catch (...) {
+            // 如果连错误事件都发不出去，就只能静默结束
+        }
     }
 }
