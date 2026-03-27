@@ -8,6 +8,8 @@
 #include <string>
 #include <memory>
 
+#include "config/app_config.h"
+
 // 前向声明
 struct sqlite3;
 class EmbeddingClient;
@@ -19,11 +21,7 @@ class LLMClient;
 // 基于 Boost.Beast 的最小 HTTP 服务器，当前以同步方式处理请求。
 class HttpServer {
 public:
-    // address 和 port 共同决定监听地址，例如 127.0.0.1:8080。
-    HttpServer(const std::string &address,
-               unsigned short port,
-               sqlite3 *db,
-               std::size_t worker_threads = 4);
+    HttpServer(const AppConfig &config, sqlite3 *db);
 
     ~HttpServer();
 

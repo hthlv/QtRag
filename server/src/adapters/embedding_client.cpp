@@ -3,83 +3,89 @@
 //
 
 #include "embedding_client.h"
+#include <boost/asio.hpp>
+#include <boost/beast/core.hpp>
+#include <boost/beast/http.hpp>
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <functional>
 #include <string>
 #include <vector>
+#include <nlohmann/json.hpp>
+namespace asio = boost::asio;
+namespace beast = boost::beast;
+namespace http = beast::http;
+using tcp = asio::ip::tcp;
 
-namespace {
-    // 将 token 映射到向量的某个为止
-    void add_token_to_vector(const std::string &token, std::vector<float> &vec) {
-        if (token.empty()) {
-            return;
-        }
-        const std::size_t dim = vec.size();
-        // 使用 std::hash 对 token 做哈希
-        std::size_t h = std::hash<std::string>{}(token);
-        // 落到某个维度槽位
-        std::size_t index = h % dim;
-        // 为了让分布更丰富，再用一位决定加正还是加负
-        float sign = ((h >> 1) & 1) ? 1.0f : -1.0f;
-        vec[index] += sign;
-    }
-
-    // 对向量做 L2 归一化
-    void normalize(std::vector<float> &vec) {
-        double sum = 0.0;
-        for (float v: vec) {
-            sum += static_cast<double>(v) * static_cast<double>(v);
-        }
-        if (sum <= 1e-12) {
-            return;
-        }
-        double norm = std::sqrt(sum);
-        for (float &v : vec) {
-            v = static_cast<float>(v / norm);
-        }
-    }
+EmbeddingClient::EmbeddingClient(const std::string &host,
+                                 const std::string &port,
+                                 const std::string &model,
+                                 int timeout_ms)
+    : host_(host),
+      port_(port),
+      model_(model),
+      timeout_ms_(timeout_ms) {
 }
 
 std::vector<float> EmbeddingClient::embed(const std::string &text) const {
-    // 先初始化一个固定维度的全0向量
-    std::vector<float> vec(kDimension, 0.0f);
-    // 1. 按“字母数字连续串”切 token
-    // 2. 每个 token hash 到一个槽位
-    // 3. 最后做归一化
-    std::string token;
-    token.reserve(32);
-    auto flush_token = [&]() {
-        if (!token.empty()) {
-            add_token_to_vector(token, vec);
-            token.clear();
-        }
-    };
-    for (unsigned char ch : text) {
-        if (std::isalnum(ch)) {
-            token.push_back(static_cast<char>(std::tolower(ch)));
-        } else {
-            flush_token();
-        }
+    if (text.empty()) {
+        return {};
     }
-    flush_token();
-    // 如果整段文本都没有 token （例如全是符号）
-    // 那就退化成按字符做一点简单映射，避免全零向量
-    bool all_zero = true;
-    for (float v : vec) {
-        if (std::abs(v) > 1e-6f) {
-            all_zero = false;
-            break;
-        }
+    // 1. 构建请求 JSON
+    nlohmann::json req_json;
+    req_json["model"] = model_;
+    // Ollama /api/embed 支持 input 数组
+    try {
+        req_json["input"] = nlohmann::json::array({text});
+    } catch (const nlohmann::json::exception &) {
+        throw std::runtime_error("embedding input must be valid UTF-8 text");
     }
-    if (all_zero) {
-        for (unsigned char ch : text) {
-            std::size_t index = ch % vec.size();
-            vec[index] += 1.0f;
-        }
+    const std::string body = req_json.dump();
+    // 2. 建立 TCP 连接
+    asio::io_context ioc;
+    tcp::resolver resolver(ioc);
+    beast::tcp_stream stream(ioc);
+    auto const results = resolver.resolve(host_, port_);
+    stream.expires_after(std::chrono::milliseconds(timeout_ms_));
+    stream.connect(results);
+    // 3. 发送 HTTP 请求
+    http::request<http::string_body> req{http::verb::post, "/api/embed", 11};
+    req.set(http::field::host, host_);
+    req.set(http::field::user_agent, "QtRAG-Server");
+    req.set(http::field::content_type, "applicaion/json");
+    req.body() = body;
+    req.prepare_payload();
+    http::write(stream, req);
+    // 4. 读取 HTTP 响应
+    beast::flat_buffer buffer;
+    http::response<http::string_body> res;
+    http::read(stream, buffer, res);
+    // 5. 关闭连接
+    beast::error_code ec;
+    stream.socket().shutdown(tcp::socket::shutdown_send, ec);
+    // 6. 判断 HTTP 状态码
+    if (res.result() != http::status::ok) {
+        throw std::runtime_error("embedding request failed, status=" +
+                                 std::to_string(static_cast<unsigned>(res.result_int())) +
+                                 ", body=" + res.body());
     }
-    // 最后归一化，方便后续直接用点积近似余弦相似度
-    normalize(vec);
-    return vec;
+    // 7. 解析 JSON
+    auto j = nlohmann::json::parse(res.body());
+    std::vector<float> result;
+    // 兼容 Ollama 新接口：embeddings: [[...]]
+    if (j.contains("embeddings") && j["embeddings"].is_array() && !j["embeddings"].empty()) {
+        for (const auto &v: j["embeddings"][0]) {
+            result.push_back(v.get<float>());
+        }
+        return result;
+    }
+    // 兼容一些旧格式：embedding: [...]
+    if (j.contains("embedding") && j["embedding"].is_array()) {
+        for (const auto &v: j["embedding"]) {
+            result.push_back(v.get<float>());
+        }
+        return result;
+    }
+    throw std::runtime_error("embedding response format is invalid");
 }

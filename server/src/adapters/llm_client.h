@@ -8,15 +8,28 @@
 #include <vector>
 #include <functional>
 
+// 调用Ollama /api/generate
 class LLMClient {
 public:
+    LLMClient(const std::string &host,
+              const std::string &port,
+              const std::string &model,
+              int timeout_ms);
+
     // 非流式：输入问题、检索上下文和 prompt，生成回答
     std::string generate(const std::string &query,
                          const std::vector<RetrievedChunk> &contexts,
                          const std::string &prompt) const;
+
     // 流式：通过回调逐段返回文本
     void stream_generate(const std::string &query,
-        const std::vector<RetrievedChunk> &contexts,
-        const std::string &prompt,
-        const std::function<void(const std::string&)> &on_chunk) const;
+                         const std::vector<RetrievedChunk> &contexts,
+                         const std::string &prompt,
+                         const std::function<void(const std::string &)> &on_chunk) const;
+
+private:
+    std::string host_;
+    std::string port_;
+    std::string model_;
+    int timeout_ms_{30000};
 };

@@ -94,7 +94,7 @@ std::optional<DocumentRecord> DocumentRepository::find_by_id(const std::string &
     return std::nullopt;
 }
 
-std::vector<DocumentRecord> DocumentRepository::list_all() {
+std::vector<DocumentRecord> DocumentRepository::listAll() {
     // 列出全部文档，方便管理页或调试接口直接展示。
     const char *sql = R"(
         SELECT id, kb_id, filename, file_path, status, chunk_count, created_at, updated_at

@@ -1,0 +1,10 @@
+{
+  "listen_address": "127.0.0.1",
+  "listen_port": "8080",
+  "worker_threads": 4,
+  "provider_host": "127.0.0.1",
+  "provider_port": "11434",
+  "provider_timeout_ms": 30000,
+  "chat_model": "qwen2.5:7b",
+  "embedding_model": "nomic-embed-text:latest"
+}

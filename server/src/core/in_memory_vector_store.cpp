@@ -4,6 +4,7 @@
 
 #include "in_memory_vector_store.h"
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 
 void InMemoryVectorStore::add(const std::string &chunk_id,
@@ -39,7 +40,7 @@ std::vector<VectorSearchHit> InMemoryVectorStore::search(
         hit.chunk_id = entry.chunk_id;
         hit.doc_id = entry.doc_id;
         hit.content = entry.content;
-        hit.score = dot_product(entry.embedding, entry.embedding);
+        hit.score = cosine_similarity(entry.embedding, query_embedding);
         hits.push_back(hit);
     }
     // 按相似度从高到底排序
@@ -69,4 +70,24 @@ float InMemoryVectorStore::dot_product(const std::vector<float> &a,
     }
 
     return result;
+}
+
+float InMemoryVectorStore::vector_norm(const std::vector<float> &values) {
+    if (values.empty()) {
+        return 0.0f;
+    }
+    return std::sqrt(dot_product(values, values));
+}
+
+float InMemoryVectorStore::cosine_similarity(const std::vector<float> &a,
+                                             const std::vector<float> &b) {
+    if (a.size() != b.size() || a.empty()) {
+        return 0.0f;
+    }
+    const float a_norm = vector_norm(a);
+    const float b_norm = vector_norm(b);
+    if (a_norm <= 0.0f || b_norm <= 0.0f) {
+        return 0.0f;
+    }
+    return dot_product(a, b) / (a_norm * b_norm);
 }

@@ -23,6 +23,7 @@
 #include <cctype>
 #include <fstream>
 #include <filesystem>
+#include <string_view>
 namespace asio = boost::asio;
 namespace beast = boost::beast;
 namespace http = beast::http;
@@ -66,6 +67,73 @@ namespace {
     // 输出错误日志。
     void log_error(const std::string &message) {
         std::cerr << "[ERROR] " << message << "\n";
+    }
+
+    bool is_utf8_continuation_byte(unsigned char ch) {
+        return (ch & 0xC0) == 0x80;
+    }
+
+    // 只接受合法 UTF-8 文本，避免后续构造 embedding 请求 JSON 时抛编码异常。
+    bool is_valid_utf8(std::string_view text) {
+        std::size_t i = 0;
+        while (i < text.size()) {
+            const unsigned char ch = static_cast<unsigned char>(text[i]);
+            if ((ch & 0x80) == 0x00) {
+                ++i;
+                continue;
+            }
+
+            if ((ch & 0xE0) == 0xC0) {
+                if (i + 1 >= text.size()) {
+                    return false;
+                }
+                const unsigned char ch1 = static_cast<unsigned char>(text[i + 1]);
+                if (ch < 0xC2 || !is_utf8_continuation_byte(ch1)) {
+                    return false;
+                }
+                i += 2;
+                continue;
+            }
+
+            if ((ch & 0xF0) == 0xE0) {
+                if (i + 2 >= text.size()) {
+                    return false;
+                }
+                const unsigned char ch1 = static_cast<unsigned char>(text[i + 1]);
+                const unsigned char ch2 = static_cast<unsigned char>(text[i + 2]);
+                if (!is_utf8_continuation_byte(ch1) || !is_utf8_continuation_byte(ch2)) {
+                    return false;
+                }
+                if ((ch == 0xE0 && ch1 < 0xA0) || (ch == 0xED && ch1 >= 0xA0)) {
+                    return false;
+                }
+                i += 3;
+                continue;
+            }
+
+            if ((ch & 0xF8) == 0xF0) {
+                if (i + 3 >= text.size()) {
+                    return false;
+                }
+                const unsigned char ch1 = static_cast<unsigned char>(text[i + 1]);
+                const unsigned char ch2 = static_cast<unsigned char>(text[i + 2]);
+                const unsigned char ch3 = static_cast<unsigned char>(text[i + 3]);
+                if (!is_utf8_continuation_byte(ch1) ||
+                    !is_utf8_continuation_byte(ch2) ||
+                    !is_utf8_continuation_byte(ch3)) {
+                    return false;
+                }
+                if (ch > 0xF4 || (ch == 0xF0 && ch1 < 0x90) || (ch == 0xF4 && ch1 > 0x8F)) {
+                    return false;
+                }
+                i += 4;
+                continue;
+            }
+
+            return false;
+        }
+
+        return true;
     }
 
     // 构造统一格式的 JSON 响应，并自动补齐 Content-Length。
@@ -277,20 +345,30 @@ namespace {
     }
 }
 
-HttpServer::HttpServer(const std::string &address, unsigned short port, sqlite3 *db, std::size_t worker_threads)
-    : address_(address),
-      port_(port),
+HttpServer::HttpServer(const AppConfig &config, sqlite3 *db)
+    : address_(config.listen_address),
+      port_(config.listen_port),
       ioc_(1),
-      worker_pool_(worker_threads),
-      worker_threads_(worker_threads),
+      worker_pool_(config.worker_threads),
+      worker_threads_(config.worker_threads),
       db_(db),
-      embedding_client_(std::make_unique<EmbeddingClient>()),
+      embedding_client_(std::make_unique<EmbeddingClient>(
+          config.provider_host,
+          config.provider_port,
+          config.embedding_model,
+          config.provider_timeout_ms)),
       vector_store_(std::make_unique<InMemoryVectorStore>()),
       retriever_(std::make_unique<Retriever>(
           embedding_client_.get(),
-          vector_store_.get(), db_, &db_mutex_)),
+          vector_store_.get(),
+          db,
+          &db_mutex_)),
       prompt_builder_(std::make_unique<PromptBuilder>()),
-      llm_client_(std::make_unique<LLMClient>()) {
+      llm_client_(std::make_unique<LLMClient>(
+          config.provider_host,
+          config.provider_port,
+          config.chat_model,
+          config.provider_timeout_ms)) {
 }
 
 HttpServer::~HttpServer() = default;
@@ -434,6 +512,12 @@ HttpServer::Response HttpServer::handle_upload_document(const Request &req) {
             http::status::bad_request,
             R"({"error":"empty request body"})");
     }
+    if (!is_valid_utf8(req.body())) {
+        return make_json_response(
+            req.version(),
+            http::status::bad_request,
+            R"({"error":"document must be valid UTF-8 text"})");
+    }
     // 清洗文件名，防止 ../ 路径穿越
     const std::string safe_filename = sanitize_filename(raw_filename);
     const std::string doc_id = generate_docuemtn_id();
@@ -556,7 +640,7 @@ HttpServer::Response HttpServer::handle_list_documents(const Request &req) {
         {
             std::lock_guard<std::mutex> lock(db_mutex_);
             DocumentRepository repo(db_);
-            docs = repo.list_all();
+            docs = repo.listAll();
         }
         return make_json_response(
             req.version(),

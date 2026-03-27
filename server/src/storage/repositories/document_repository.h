@@ -28,7 +28,7 @@ public:
     std::optional<DocumentRecord> find_by_id(const std::string &id);
 
     // 获取所有文档，按创建时间倒序返回。
-    std::vector<DocumentRecord> list_all();
+    std::vector<DocumentRecord> listAll();
 
 private:
     // 底层 sqlite3 连接句柄，不负责其生命周期。

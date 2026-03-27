@@ -42,6 +42,9 @@ public:
 private:
     static float dot_product(const std::vector<float> &a,
                              const std::vector<float> &b);
+    static float vector_norm(const std::vector<float> &values);
+    static float cosine_similarity(const std::vector<float> &a,
+                                   const std::vector<float> &b);
 
 private:
     mutable std::mutex mutex_;

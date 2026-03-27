@@ -3,10 +3,17 @@
 //
 
 #include "llm_client.h"
+#include <boost/asio.hpp>
+#include <boost/beast/core.hpp>
+#include <boost/beast/http.hpp>
+#include <nlohmann/json.hpp>
 #include <sstream>
 #include <algorithm>
-#include <bits/this_thread_sleep.h>
-
+#include <thread>
+namespace asio = boost::asio;
+namespace beast = boost::beast;
+namespace http = beast::http;
+using tcp = asio::ip::tcp;
 namespace {
     // 截断文本，避免回答太长
     std::string truncate_text(const std::string &text, std::size_t max_len) {
@@ -63,28 +70,63 @@ namespace {
 }
 
 
+LLMClient::LLMClient(const std::string &host,
+                     const std::string &port,
+                     const std::string &model,
+                     int timeout_ms)
+    : host_(host),
+      port_(port),
+      model_(model),
+      timeout_ms_(timeout_ms) {
+}
+
 std::string LLMClient::generate(const std::string &query,
                                 const std::vector<RetrievedChunk> &contexts,
                                 const std::string &prompt) const {
-    (void) prompt; // 先不用，后续接入真正LLM再使用
-    // 如果没有检索到上下文，就返回无法回答
-    if (contexts.empty()) {
-        return "我无法从当前知识库中找到足够相关的内容来回答这个问题。";
+    (void)query;
+    (void)contexts;
+    // 1. 构造请求 JSON
+    nlohmann::json req_json;
+    req_json["model"] = model_;
+    req_json["prompt"] = prompt;
+    // 这里明确要求非流式，让服务端先拿到完整回答
+    req_json["stream"] = false;
+    const std::string body = req_json.dump();
+    // 2. 建立 TCP 连接
+    asio::io_context ioc;
+    tcp::resolver resolver(ioc);
+    beast::tcp_stream stream(ioc);
+    auto const results = resolver.resolve(host_, port_);
+    stream.expires_after(std::chrono::milliseconds(timeout_ms_));
+    stream.connect(results);
+    // 3. 发送请求
+    http::request<http::string_body> req{http::verb::post, "/api/generate", 11};
+    req.set(http::field::host, host_);
+    req.set(http::field::user_agent, "QtRAG-Server");
+    req.set(http::field::content_type, "application/json");
+    req.body() = body;
+    req.prepare_payload();
+    http::write(stream, req);
+    // 4. 读取响应
+    beast::flat_buffer buffer;
+    http::response<http::string_body> res;
+    http::read(stream, buffer, res);
+    // 5. 关闭连接
+    beast::error_code ec;
+    stream.socket().shutdown(tcp::socket::shutdown_both, ec);
+    // 6. 状态码校验
+    if (res.result() != http::status::ok) {
+        throw std::runtime_error("llm request failed, status=" +
+                                 std::to_string(static_cast<unsigned>(res.result_int())) +
+                                 ", body=" + res.body());
     }
-    std::ostringstream oss;
-    // 这里用“基于检索结果的模板回答”模拟 LLM 输出
-    oss << "根据知识库中检索到的内容，关于“" << query << "”的问题，我整理出以下信息：\n\n";
-    // 最多选前 2~3 个片段做一个简要总结
-    const std::size_t max_items = std::min<std::size_t>(contexts.size(), 3);
-    for (std::size_t i = 0; i < max_items; ++i) {
-        oss << (i + 1) << ". ";
-        if (!contexts[i].filename.empty()) {
-            oss << "在文件《" << contexts[i].filename << "》中提到：\n";
-        }
-        oss << truncate_text(contexts[i].text, 180) << "\n\n";
+    // 7. 解析 JSON
+    auto j = nlohmann::json::parse(res.body());
+    // Ollama /api/generate 非流式返回里，回答文本在 response 字段
+    if (!j.contains("response")) {
+        throw std::runtime_error("llm response format is invalid");
     }
-    oss << "如果你希望，我还可以继续基于这些文档做更具体的总结、对比或条目化解释。";
-    return oss.str();
+    return j["response"].get<std::string>();
 }
 
 void LLMClient::stream_generate(const std::string &query,
@@ -94,7 +136,7 @@ void LLMClient::stream_generate(const std::string &query,
     // 1. 先生成完整回答
     // 2. 再按字符数分段，避免把 UTF-8 中文切坏
     const std::string full_answer = generate(query, contexts, prompt);
-    const std::size_t piece_size = 18;
+    const std::size_t piece_size = 20;
     // 这里先预切片，后续逐段回调给 SSE 层发送。
     const auto pieces = split_utf8_by_chars(full_answer, piece_size);
     for (const auto &piece: pieces) {
@@ -102,6 +144,6 @@ void LLMClient::stream_generate(const std::string &query,
         on_chunk(piece);
         // 人工 sleep 一下，模拟流式输出效果
         // 注意：当前服务器还是单线程同步版，这会阻塞其它请求
-        std::this_thread::sleep_for(std::chrono::milliseconds(60));
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
     }
 }
