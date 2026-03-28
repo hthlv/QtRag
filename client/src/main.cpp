@@ -4,6 +4,7 @@
 #include <QMessageBox>
 #include <QtGlobal>
 #include "ui/main_window.h"
+#include "ui/app_style.h"
 #include "storage/database_manager.h"
 
 namespace {
@@ -65,6 +66,7 @@ int main(int argc, char *argv[])
 {
     normalizeQtInputModule();
     QApplication app(argc, argv);
+    applyAppStyle(&app);
 
     // 客户端启动时先初始化本地数据库，后续会话和配置都依赖它。
     DatabaseManager dbManager("qtrag_client.db");

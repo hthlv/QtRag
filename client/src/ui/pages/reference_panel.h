@@ -4,7 +4,11 @@
 
 #pragma once
 #include <QWidget>
-class QListWidget;
+#ifdef QTRAG_CLIENT_HAS_WEBENGINE
+class QWebEngineView;
+#else
+class QTextBrowser;
+#endif
 class QJsonArray;
 
 class ReferencePanel : public QWidget {
@@ -18,5 +22,17 @@ public:
     void clearReferences();
 
 private:
-    QListWidget *referenceList_{nullptr};
+#ifdef QTRAG_CLIENT_HAS_WEBENGINE
+    QString buildReferencePageHtml() const;
+
+    void renderReferencesJson(const QString &json);
+
+    QWebEngineView *referenceView_{nullptr};
+    bool referenceViewReady_{false};
+    QString pendingRefsJson_{"[]"};
+#else
+    QString markdownToHtmlFragment(const QString &markdown) const;
+
+    QTextBrowser *referenceView_{nullptr};
+#endif
 };

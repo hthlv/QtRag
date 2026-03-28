@@ -31,8 +31,18 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QUrl>
+#ifndef QTRAG_CLIENT_HAS_WEBENGINE
 #include <QTextCursor>
+#include <QTextDocument>
+#include <QRegularExpression>
+#endif
 #include <QSqlDatabase>
+#ifdef QTRAG_CLIENT_HAS_WEBENGINE
+#include <QWebEngineView>
+#include <QWebEnginePage>
+#include <QWebEngineSettings>
+#endif
+#include <QtGlobal>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent),
@@ -60,15 +70,24 @@ MainWindow::~MainWindow() {
 
 void MainWindow::setupUi() {
     auto *central = new QWidget(this);
+    central->setObjectName("MainSurface");
     setCentralWidget(central);
     auto *rootLayout = new QVBoxLayout(central);
+    rootLayout->setContentsMargins(20, 20, 20, 16);
+    rootLayout->setSpacing(18);
     auto *splitter = new QSplitter(this);
 
     // 左侧面板用于展示知识库和会话列表。
     auto *leftPanel = new QWidget(this);
+    leftPanel->setObjectName("LeftPanel");
     auto *leftLayout = new QVBoxLayout(leftPanel);
-    leftLayout->addWidget(new QLabel("会话", this));
+    leftLayout->setContentsMargins(18, 18, 18, 18);
+    leftLayout->setSpacing(12);
+    auto *sessionTitle = new QLabel("会话", this);
+    sessionTitle->setProperty("role", "sectionTitle");
+    leftLayout->addWidget(sessionTitle);
     leftList_ = new QListWidget(this);
+    leftList_->setObjectName("SessionList");
     leftLayout->addWidget(leftList_);
     // 点击某个会话时，切换并加载本地历史消息
     connect(leftList_, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
@@ -79,14 +98,87 @@ void MainWindow::setupUi() {
 
     // 中间区域展示聊天记录，并提供输入框和发送按钮。
     auto *centerPanel = new QWidget(this);
+    centerPanel->setObjectName("CenterPanel");
     auto *centerLayout = new QVBoxLayout(centerPanel);
-    centerLayout->addWidget(new QLabel("聊天区", this));
+    centerLayout->setContentsMargins(22, 18, 22, 22);
+    centerLayout->setSpacing(14);
+    auto *chatTitle = new QLabel("聊天区", this);
+    chatTitle->setProperty("role", "sectionTitle");
+    centerLayout->addWidget(chatTitle);
+#ifdef QTRAG_CLIENT_HAS_WEBENGINE
+    chatView_ = new QWebEngineView(this);
+    chatView_->setObjectName("ChatView");
+    // 允许本地 HTML 页面加载 CDN 的 KaTeX/marked 资源。
+    chatView_->settings()->setAttribute(QWebEngineSettings::LocalContentCanAccessRemoteUrls, true);
+    chatViewReady_ = false;
+    connect(chatView_, &QWebEngineView::loadFinished, this, [this](bool ok) {
+        chatViewReady_ = ok;
+        if (ok) {
+            renderChatMessages();
+        }
+    });
+    // 先加载固定页面骨架，后续只通过 JS 更新消息数据，避免频繁整页重绘闪烁。
+    chatView_->setHtml(buildChatPageHtml(), QUrl("https://qtrag.local/"));
+#else
+    // 回退模式：系统未安装 Qt WebEngine 时，仍然使用 QTextEdit 渲染气泡。
     chatView_ = new QTextEdit(this);
+    chatView_->setObjectName("ChatView");
     chatView_->setReadOnly(true);
     chatView_->setPlaceholderText("这里显示聊天记录...");
+    chatView_->document()->setDefaultStyleSheet(QString::fromUtf8(R"(
+p { margin: 0 0 8px 0; }
+h1, h2, h3, h4 { margin: 4px 0 8px 0; font-weight: 700; }
+ul, ol { margin: 4px 0 8px 18px; }
+table.md-table {
+    border-collapse: collapse;
+    margin: 6px 0 10px 0;
+    width: 100%;
+}
+table.md-table th,
+table.md-table td {
+    border: 1px solid #d9d9d9;
+    padding: 6px 8px;
+    text-align: left;
+}
+table.md-table th {
+    background: #f6f6f6;
+    font-weight: 700;
+}
+pre {
+    background: #1f2329;
+    color: #e8edf2;
+    border-radius: 8px;
+    padding: 8px;
+}
+code {
+    background: #eef2f5;
+    border-radius: 4px;
+    padding: 1px 4px;
+    font-family: "JetBrains Mono", "Cascadia Code", "Consolas", monospace;
+}
+.math-inline {
+    background: #eef2f5;
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-family: "Cambria Math", "Times New Roman", serif;
+}
+.math-block {
+    margin: 6px 0 10px 0;
+    padding: 8px 10px;
+    background: #f5f7f8;
+    border-left: 3px solid #07c160;
+    border-radius: 6px;
+    white-space: pre-wrap;
+    font-family: "Cambria Math", "Times New Roman", serif;
+}
+a { color: #1b7f4f; text-decoration: none; }
+)"));
+#endif
     centerLayout->addWidget(chatView_, 1);
     auto *inputLayout = new QHBoxLayout();
+    inputLayout->setSpacing(12);
     inputEdit_ = new QTextEdit(this);
+    inputEdit_->setObjectName("InputEdit");
     inputEdit_->setPlaceholderText("请输入你的问题...");
     inputEdit_->setFixedHeight(100);
     inputEdit_->setAcceptRichText(false);
@@ -94,13 +186,17 @@ void MainWindow::setupUi() {
     inputEdit_->setAttribute(Qt::WA_InputMethodEnabled, true);
     inputEdit_->setInputMethodHints(Qt::ImhMultiLine);
     sendButton_ = new QPushButton("发送", this);
+    sendButton_->setProperty("variant", "primary");
+    sendButton_->setMinimumWidth(92);
     inputLayout->addWidget(inputEdit_, 1);
     inputLayout->addWidget(sendButton_);
     centerLayout->addLayout(inputLayout);
 
     // 右侧区域预留给检索命中的引用片段。
     auto *rightPanel = new QWidget(this);
+    rightPanel->setObjectName("RightPanel");
     auto *rightLayout = new QVBoxLayout(rightPanel);
+    rightLayout->setContentsMargins(18, 18, 18, 18);
     referenceList_ = new ReferencePanel(this);
     rightLayout->addWidget(referenceList_);
 
@@ -111,6 +207,7 @@ void MainWindow::setupUi() {
     splitter->setStretchFactor(0, 1);
     splitter->setStretchFactor(1, 3);
     splitter->setStretchFactor(2, 1);
+    splitter->setChildrenCollapsible(false);
     rootLayout->addWidget(splitter);
     inputEdit_->setFocus();
 
@@ -128,8 +225,7 @@ void MainWindow::setupUi() {
             }
         }
         // 先在聊天区显示用户消息
-        chatView_->append("User: " + text);
-        chatView_->append("");
+        appendChatMessageToView("user", text);
         // 把用户消息保存到本地数据库
         if (!saveMessageToLocal("user", text)) {
             statusBar()->showMessage("用户消息保存失败");
@@ -210,8 +306,7 @@ void MainWindow::sendChatRequest(const QString &query) {
             answer = "[空回答]";
         }
         // 显示 AI 回答
-        chatView_->append("AI: " + answer);
-        chatView_->append("");
+        appendChatMessageToView("assistant", answer);
         if (!saveMessageToLocal("assistant", answer)) {
             statusBar()->showMessage("AI 消息保存失败");
         }
@@ -230,7 +325,10 @@ void MainWindow::renderReferences(const QByteArray &jsonData) {
         return;
     }
     QJsonObject root = doc.object();
-    QJsonArray refs = root.value("refs").toArray();
+    QJsonArray refs = root.value("references").toArray();
+    if (refs.isEmpty()) {
+        refs = root.value("refs").toArray();
+    }
     referenceList_->setReferences(refs);
 }
 
@@ -348,11 +446,6 @@ void MainWindow::processSseEventBlock(const QString &block) {
     }
     // done 事件：本轮结束
     if (eventName == "done") {
-        // 给 AI 回答补两个换行，便于下一轮显示
-        if (aiMessageStarted_) {
-            chatView_->moveCursor(QTextCursor::End);
-            chatView_->insertPlainText("\n\n");
-        }
         //把本轮 AI 最终回答保存在本地数据库
         if (!currentAiMessageBuffer_.isEmpty()) {
             if (!saveMessageToLocal("assistant", currentAiMessageBuffer_)) {
@@ -380,18 +473,18 @@ void MainWindow::processSseEventBlock(const QString &block) {
 }
 
 void MainWindow::appendAiStreamText(const QString &text) {
-    chatView_->moveCursor(QTextCursor::End);
-    // 第一次收到 token 时，先输出 AI：
-    if (!aiMessageStarted_) {
-        chatView_->insertPlainText("AI: ");
+    if (text.isEmpty()) {
+        return;
+    }
+    // 第一次收到 token 时创建一个 AI 气泡，后续 token 继续写入同一个气泡。
+    if (!aiMessageStarted_ || chatMessages_.isEmpty() || chatMessages_.back().role != "assistant") {
+        chatMessages_.push_back({"assistant", QString()});
         aiMessageStarted_ = true;
     }
-    // 逐步追加文本
-    chatView_->insertPlainText(text);
+    chatMessages_.back().content += text;
     // 同时缓存整段 AI 消息，done 时落库
     currentAiMessageBuffer_ += text;
-    // 保证滚动条始终跟到底部
-    chatView_->moveCursor(QTextCursor::End);
+    renderChatMessages();
 }
 
 void MainWindow::renderReferencesFromArray(const QJsonArray &refs) {
@@ -448,7 +541,8 @@ bool MainWindow::createNewSession() {
     // 切换到刚创建的新会话
     currentSessionId_ = sessionId;
     currentAiMessageBuffer_.clear();
-    chatView_->clear();
+    chatMessages_.clear();
+    renderChatMessages();
     referenceList_->clearReferences();
     restoreSessionSelection(currentSessionId_);
     return true;
@@ -467,19 +561,16 @@ void MainWindow::switchToSession(const QString &sessionId) {
 }
 
 void MainWindow::loadMessageForSession(const QString &sessionId) {
-    chatView_->clear();
+    chatMessages_.clear();
     if (!sessionController_) {
+        renderChatMessages();
         return;
     }
     auto messages = sessionController_->loadMessages(sessionId);
     for (const auto &msg: messages) {
-        if (msg.role == "user") {
-            chatView_->append("User: " + msg.content);
-        } else {
-            chatView_->append("AI: " + msg.content);
-        }
-        chatView_->append("");
+        chatMessages_.push_back({msg.role, msg.content});
     }
+    renderChatMessages();
 }
 
 bool MainWindow::saveMessageToLocal(const QString &role, const QString &content) {
@@ -515,3 +606,373 @@ void MainWindow::restoreSessionSelection(const QString &sessionId) {
         }
     }
 }
+
+void MainWindow::appendChatMessageToView(const QString &role, const QString &content) {
+    chatMessages_.push_back({role, content});
+    renderChatMessages();
+}
+
+void MainWindow::renderChatMessages() {
+#ifdef QTRAG_CLIENT_HAS_WEBENGINE
+    if (!chatView_ || !chatViewReady_) {
+        return;
+    }
+
+    QJsonArray payload;
+    for (const auto &item: chatMessages_) {
+        QJsonObject obj;
+        obj.insert("role", item.role);
+        obj.insert("content", item.content);
+        payload.push_back(obj);
+    }
+
+    const QString json = QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    const QString js = QString("window.setChatMessages(%1);").arg(json);
+    chatView_->page()->runJavaScript(js);
+#else
+    if (!chatView_) {
+        return;
+    }
+    QString html;
+    html.reserve(chatMessages_.size() * 256);
+    for (const auto &item: chatMessages_) {
+        html += buildChatBubbleHtml(item.role, item.content);
+    }
+    chatView_->setHtml(html);
+    chatView_->moveCursor(QTextCursor::End);
+#endif
+}
+
+#ifdef QTRAG_CLIENT_HAS_WEBENGINE
+QString MainWindow::buildChatPageHtml() const {
+    // WebEngine 页面负责：微信风格气泡布局 + Markdown 解析 + KaTeX 数学公式渲染。
+    return QString::fromUtf8(R"QTRAG_CHAT_HTML(
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+  <style>
+    :root {
+      --wx-bg: #ededed;
+      --wx-user: #95ec69;
+      --wx-ai: #ffffff;
+      --wx-border: #dfdfdf;
+      --wx-text: #191919;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 8px 10px 10px 10px;
+      background: var(--wx-bg);
+      color: var(--wx-text);
+      font-family: "PingFang SC","Microsoft YaHei UI","Noto Sans CJK SC",sans-serif;
+      line-height: 1.5;
+    }
+    .chat-row {
+      width: 100%;
+      display: flex;
+      align-items: flex-end;
+      margin: 4px 0;
+      gap: 4px;
+    }
+    .chat-row.user { justify-content: flex-end; }
+    .chat-row.assistant { justify-content: flex-start; }
+    .avatar {
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 700;
+      user-select: none;
+      flex: 0 0 30px;
+    }
+    .avatar.user { background: #07c160; color: #fff; }
+    .avatar.assistant { background: #d8d8d8; color: #4f4f4f; }
+    .tail {
+      width: 0;
+      height: 0;
+      border-top: 6px solid transparent;
+      border-bottom: 6px solid transparent;
+      margin-bottom: 6px;
+      flex: 0 0 auto;
+    }
+    .tail.user { border-left: 7px solid var(--wx-user); }
+    .tail.assistant { border-right: 7px solid var(--wx-ai); }
+    .bubble {
+      display: inline-block;
+      max-width: min(78vw, 460px);
+      border-radius: 8px;
+      border: 1px solid var(--wx-border);
+      padding: 8px 10px;
+      color: var(--wx-text);
+      box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+    }
+    .bubble.user { background: var(--wx-user); border-color: #7fd257; }
+    .bubble.assistant { background: var(--wx-ai); border-color: var(--wx-border); }
+    .sender {
+      font-size: 10px;
+      color: #6c6c6c;
+      margin-bottom: 4px;
+    }
+    .msg-content p { margin: 0 0 8px 0; }
+    .msg-content h1, .msg-content h2, .msg-content h3, .msg-content h4 {
+      margin: 4px 0 8px 0;
+      font-size: 1em;
+      font-weight: 700;
+    }
+    .msg-content ul, .msg-content ol { margin: 4px 0 8px 18px; }
+    .msg-content pre {
+      background: #1f2329;
+      color: #e8edf2;
+      border-radius: 8px;
+      padding: 8px;
+      overflow: auto;
+      margin: 6px 0 10px 0;
+    }
+    .msg-content code {
+      background: #eef2f5;
+      border-radius: 4px;
+      padding: 1px 4px;
+      font-family: "JetBrains Mono", "Cascadia Code", "Consolas", monospace;
+    }
+    .msg-content pre code {
+      background: transparent;
+      padding: 0;
+    }
+    .msg-content table {
+      border-collapse: collapse;
+      margin: 6px 0 10px 0;
+      width: 100%;
+    }
+    .msg-content th, .msg-content td {
+      border: 1px solid #d9d9d9;
+      padding: 6px 8px;
+      text-align: left;
+    }
+    .msg-content th {
+      background: #f6f6f6;
+      font-weight: 700;
+    }
+    .msg-content a {
+      color: #1b7f4f;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="chat-root"></div>
+  <script>
+    window.__pendingMessages = [];
+
+    function escapeHtml(text) {
+      return (text || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function markdownToHtml(text) {
+      if (window.marked && typeof window.marked.parse === "function") {
+        return window.marked.parse(text || "", { gfm: true, breaks: true });
+      }
+      return "<p>" + escapeHtml(text || "").replace(/\n/g, "<br/>") + "</p>";
+    }
+
+    function renderMath(container) {
+      if (window.renderMathInElement) {
+        window.renderMathInElement(container, {
+          delimiters: [
+            { left: "$$", right: "$$", display: true },
+            { left: "$", right: "$", display: false },
+            { left: "\\(", right: "\\)", display: false },
+            { left: "\\[", right: "\\]", display: true }
+          ],
+          throwOnError: false
+        });
+      }
+    }
+
+    // 统一由 C++ 注入消息 JSON，前端负责按微信布局渲染气泡。
+    window.setChatMessages = function(messages) {
+      const root = document.getElementById("chat-root");
+      if (!root) {
+        return;
+      }
+      window.__pendingMessages = Array.isArray(messages) ? messages : [];
+      root.innerHTML = window.__pendingMessages.map((msg) => {
+        const isUser = msg.role === "user";
+        const sender = isUser ? "我" : "助手";
+        const avatar = isUser ? "我" : "AI";
+        const rowClass = isUser ? "chat-row user" : "chat-row assistant";
+        const bubbleClass = isUser ? "bubble user" : "bubble assistant";
+        const leftPart = isUser
+          ? ""
+          : '<span class="avatar assistant">' + avatar + '</span><span class="tail assistant"></span>';
+        const rightPart = isUser
+          ? '<span class="tail user"></span><span class="avatar user">' + avatar + '</span>'
+          : "";
+        return (
+          '<div class="' + rowClass + '">' +
+            leftPart +
+            '<div class="' + bubbleClass + '">' +
+              '<div class="sender">' + sender + '</div>' +
+              '<div class="msg-content">' + markdownToHtml(msg.content || "") + '</div>' +
+            '</div>' +
+            rightPart +
+          '</div>'
+        );
+      }).join("");
+
+      renderMath(root);
+      window.scrollTo(0, document.body.scrollHeight);
+    };
+
+    window.addEventListener("load", function() {
+      window.setChatMessages(window.__pendingMessages);
+    });
+  </script>
+</body>
+</html>
+)QTRAG_CHAT_HTML");
+}
+#else
+QString MainWindow::buildChatBubbleHtml(const QString &role, const QString &content) const {
+    const bool isUser = (role == "user");
+    const QString sender = isUser ? "我" : "助手";
+    QString contentHtml = markdownToHtmlFragment(content);
+    if (contentHtml.trimmed().isEmpty()) {
+        contentHtml = "<p>&nbsp;</p>";
+    }
+
+    const QString bubbleBg = isUser ? "#95ec69" : "#ffffff";
+    const QString bubbleFg = "#191919";
+    const QString bubbleBorder = isUser ? "#7fd257" : "#e6e6e6";
+    const QString senderColor = isUser ? "#3d6a2a" : "#7b7b7b";
+    const QString avatarBg = isUser ? "#07c160" : "#d9d9d9";
+    const QString avatarFg = isUser ? "#ffffff" : "#4f4f4f";
+    const QString avatarText = isUser ? "我" : "AI";
+    const QString bubblePart = QString::fromUtf8(R"(
+<div style="display:inline-block; max-width:420px; border:1px solid %1; background:%2; color:%3; border-radius:8px; padding:8px 10px;">
+  <div style="font-size:10px; margin-bottom:4px; color:%4;">%5</div>
+  <div style="font-size:13px; line-height:1.45;">%6</div>
+</div>
+)")
+            .arg(bubbleBorder, bubbleBg, bubbleFg, senderColor, sender, contentHtml);
+    const QString avatarPart = QString::fromUtf8(R"(
+<span style="display:inline-flex; width:30px; height:30px; border-radius:15px; background:%1; color:%2; align-items:center; justify-content:center; font-size:11px; font-weight:700; vertical-align:bottom;">%3</span>
+)")
+            .arg(avatarBg, avatarFg, avatarText);
+    const QString tailPart = QString::fromUtf8(R"(
+<span style="display:inline-block; width:0; height:0; border-top:6px solid transparent; border-bottom:6px solid transparent; %1; vertical-align:bottom; margin:%2;"></span>
+)")
+            .arg(isUser
+                     ? QString("border-left:7px solid %1").arg(bubbleBg)
+                     : QString("border-right:7px solid %1").arg(bubbleBg),
+                 isUser ? QString("0 6px 6px 3px") : QString("0 3px 6px 6px"));
+
+    if (isUser) {
+        return QString::fromUtf8(R"(
+<div style="width:100%; margin:4px 0; text-align:right;">
+  <span style="display:inline-block;">%1%2%3</span>
+</div>
+)")
+                .arg(bubblePart, tailPart, avatarPart);
+    }
+    return QString::fromUtf8(R"(
+<div style="width:100%; margin:4px 0; text-align:left;">
+  <span style="display:inline-block;">%1%2%3</span>
+</div>
+)")
+            .arg(avatarPart, tailPart, bubblePart);
+}
+
+QString MainWindow::markdownToHtmlFragment(const QString &markdown) const {
+    if (markdown.isEmpty()) {
+        return QString();
+    }
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+    // 回退模式沿用 Markdown + 简单数学占位渲染，保证不安装 WebEngine 时仍能看清内容。
+    struct PlaceholderPair {
+        QString token;
+        QString html;
+    };
+    QVector<PlaceholderPair> placeholders;
+    QString markdownWithPlaceholders = markdown;
+    int placeholderIndex = 0;
+
+    auto replaceMathBlock = [&]() {
+        QRegularExpression blockExpr(QStringLiteral("\\$\\$([\\s\\S]*?)\\$\\$"));
+        blockExpr.setPatternOptions(QRegularExpression::DotMatchesEverythingOption);
+        int searchPos = 0;
+        while (true) {
+            const QRegularExpressionMatch match = blockExpr.match(markdownWithPlaceholders, searchPos);
+            if (!match.hasMatch()) {
+                break;
+            }
+            const QString formulaRaw = match.captured(1).trimmed();
+            const QString formulaEscaped = formulaRaw.toHtmlEscaped();
+            const QString token = QString("QTRAG_MATH_BLOCK_%1").arg(placeholderIndex++);
+            placeholders.push_back({token, QString("<div class=\"math-block\">%1</div>").arg(formulaEscaped)});
+            markdownWithPlaceholders.replace(match.capturedStart(0), match.capturedLength(0), token);
+            searchPos = match.capturedStart(0) + token.size();
+        }
+    };
+
+    auto replaceMathInline = [&]() {
+        QRegularExpression inlineExpr(QStringLiteral("(?<!\\$)\\$([^\\n$]+?)\\$(?!\\$)"));
+        int searchPos = 0;
+        while (true) {
+            const QRegularExpressionMatch match = inlineExpr.match(markdownWithPlaceholders, searchPos);
+            if (!match.hasMatch()) {
+                break;
+            }
+            const QString formulaRaw = match.captured(1).trimmed();
+            const QString formulaEscaped = formulaRaw.toHtmlEscaped();
+            const QString token = QString("QTRAG_MATH_INLINE_%1").arg(placeholderIndex++);
+            placeholders.push_back({token, QString("<span class=\"math-inline\">%1</span>").arg(formulaEscaped)});
+            markdownWithPlaceholders.replace(match.capturedStart(0), match.capturedLength(0), token);
+            searchPos = match.capturedStart(0) + token.size();
+        }
+    };
+
+    replaceMathBlock();
+    replaceMathInline();
+
+    QTextDocument document;
+    document.setMarkdown(markdownWithPlaceholders);
+    QString html = document.toHtml();
+    const int bodyStartTag = html.indexOf("<body");
+    QString fragment = html;
+    if (bodyStartTag >= 0) {
+        const int bodyStart = html.indexOf('>', bodyStartTag);
+        if (bodyStart >= 0) {
+            const int bodyEnd = html.indexOf("</body>", bodyStart);
+            fragment = (bodyEnd >= 0)
+                           ? html.mid(bodyStart + 1, bodyEnd - bodyStart - 1)
+                           : html.mid(bodyStart + 1);
+        }
+    }
+
+    fragment.replace("<table>", "<table class=\"md-table\">");
+    fragment.replace("<table ", "<table class=\"md-table\" ");
+    for (const auto &placeholder: placeholders) {
+        fragment.replace(placeholder.token, placeholder.html);
+    }
+    return fragment;
+#else
+    QString escaped = markdown.toHtmlEscaped();
+    escaped.replace('\n', "<br/>");
+    return QString("<p>%1</p>").arg(escaped);
+#endif
+}
+#endif

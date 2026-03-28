@@ -98,6 +98,7 @@ DocumentPage::DocumentPage(const QString &serverBaseUrl, QWidget *parent)
     : QDialog(parent),
       serverBaseUrl_(serverBaseUrl),
       networkManager_(new QNetworkAccessManager(this)) {
+    setObjectName("DocumentPage");
     setupUi();
     setWindowTitle("文档管理");
     resize(900, 600);
@@ -107,15 +108,21 @@ DocumentPage::DocumentPage(const QString &serverBaseUrl, QWidget *parent)
 
 void DocumentPage::setupUi() {
     auto *rootLayout = new QVBoxLayout(this);
+    rootLayout->setContentsMargins(20, 20, 20, 20);
+    rootLayout->setSpacing(16);
     // 顶部按钮区
     auto *buttonLayout = new QHBoxLayout();
+    buttonLayout->setSpacing(10);
     uploadButton_ = new QPushButton("上传文档", this);
+    uploadButton_->setProperty("variant", "primary");
     refreshButton_ = new QPushButton("刷新列表", this);
+    refreshButton_->setProperty("variant", "ghost");
     buttonLayout->addWidget(uploadButton_);
     buttonLayout->addWidget(refreshButton_);
     buttonLayout->addStretch();
     // 表格区
     tableWidget_ = new QTableWidget(this);
+    tableWidget_->setObjectName("DocumentTable");
     tableWidget_->setColumnCount(5);
     tableWidget_->setHorizontalHeaderLabels({
         "文档ID", "文件名", "状态", "Chunk数", "创建时间"
@@ -125,6 +132,7 @@ void DocumentPage::setupUi() {
     tableWidget_->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     tableWidget_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     tableWidget_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    tableWidget_->setAlternatingRowColors(true);
     rootLayout->addLayout(buttonLayout);
     rootLayout->addWidget(tableWidget_);
     // 点击上传按钮：选择文件并上传

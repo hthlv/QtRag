@@ -26,6 +26,19 @@ endif()
 find_package(QT NAMES ${_qtrag_client_qt_candidates} REQUIRED COMPONENTS Widgets Sql Network)
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets Sql Network)
 
+set(QTRAG_CLIENT_HAS_WEBENGINE OFF)
+if(QT_VERSION_MAJOR EQUAL 6)
+    find_package(Qt6 QUIET COMPONENTS WebEngineWidgets)
+    if(TARGET Qt6::WebEngineWidgets)
+        set(QTRAG_CLIENT_HAS_WEBENGINE ON)
+    endif()
+else()
+    find_package(Qt5 QUIET COMPONENTS WebEngineWidgets)
+    if(TARGET Qt5::WebEngineWidgets)
+        set(QTRAG_CLIENT_HAS_WEBENGINE ON)
+    endif()
+endif()
+
 set(QTRAG_CLIENT_TARGET QtRagClient)
 
 if(QT_VERSION_MAJOR GREATER_EQUAL 6)
@@ -50,6 +63,17 @@ target_link_libraries(${QTRAG_CLIENT_TARGET}
         Qt${QT_VERSION_MAJOR}::Sql
         Qt${QT_VERSION_MAJOR}::Network
 )
+
+if(QTRAG_CLIENT_HAS_WEBENGINE)
+    target_link_libraries(${QTRAG_CLIENT_TARGET}
+        PRIVATE
+            Qt${QT_VERSION_MAJOR}::WebEngineWidgets
+    )
+    target_compile_definitions(${QTRAG_CLIENT_TARGET}
+        PRIVATE
+            QTRAG_CLIENT_HAS_WEBENGINE=1
+    )
+endif()
 
 set_target_properties(${QTRAG_CLIENT_TARGET} PROPERTIES
     WIN32_EXECUTABLE TRUE
