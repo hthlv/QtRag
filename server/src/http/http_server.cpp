@@ -30,6 +30,19 @@ namespace http = beast::http;
 using tcp = asio::ip::tcp;
 
 namespace {
+    constexpr unsigned kErrorInvalidParameter = 4001;
+    constexpr unsigned kErrorMissingHeader = 4002;
+    constexpr unsigned kErrorEmptyBody = 4003;
+    constexpr unsigned kErrorDatabase = 5001;
+    constexpr unsigned kErrorEmbedding = 5002;
+    constexpr unsigned kErrorLlm = 5003;
+    constexpr unsigned kErrorInternal = 5004;
+
+    struct ErrorInfo {
+        unsigned code;
+        std::string message;
+    };
+
     // JSON字符串转义
     std::string escape_json(const std::string &input) {
         std::string output;
@@ -54,6 +67,15 @@ namespace {
         return output;
     }
 
+    std::string build_error_json(unsigned code, const std::string &message) {
+        std::ostringstream oss;
+        oss << "{"
+            << R"("code":)" << code << ","
+            << R"("message":")" << escape_json(message) << "\""
+            << "}";
+        return oss.str();
+    }
+
     // 把枚举形式的 HTTP 方法转成便于日志输出的字符串。
     std::string method_to_string(http::verb method) {
         return std::string(http::to_string(method));
@@ -67,6 +89,43 @@ namespace {
     // 输出错误日志。
     void log_error(const std::string &message) {
         std::cerr << "[ERROR] " << message << "\n";
+    }
+
+    std::string to_lower_copy(const std::string &text) {
+        std::string lower = text;
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        return lower;
+    }
+
+    bool starts_with(const std::string &text, const std::string &prefix) {
+        return text.size() >= prefix.size() &&
+               text.compare(0, prefix.size(), prefix) == 0;
+    }
+
+    ErrorInfo classify_internal_error(const std::exception &ex) {
+        const std::string raw = ex.what();
+        const std::string normalized = to_lower_copy(raw);
+
+        if (normalized.find("sqlite") != std::string::npos ||
+            starts_with(normalized, "prepare ") ||
+            starts_with(normalized, "insert ") ||
+            starts_with(normalized, "update ") ||
+            starts_with(normalized, "find ") ||
+            starts_with(normalized, "list ")) {
+            return {kErrorDatabase, "database error"};
+        }
+        if (normalized.find("embedding request failed") != std::string::npos ||
+            normalized.find("embedding response format is invalid") != std::string::npos ||
+            normalized.find("embedding input must be valid utf-8 text") != std::string::npos) {
+            return {kErrorEmbedding, "embedding call failed"};
+        }
+        if (normalized.find("llm request failed") != std::string::npos ||
+            normalized.find("llm response format is invalid") != std::string::npos) {
+            return {kErrorLlm, "llm call failed"};
+        }
+        return {kErrorInternal, "internal error"};
     }
 
     bool is_utf8_continuation_byte(unsigned char ch) {
@@ -482,17 +541,19 @@ HttpServer::Response HttpServer::handle_request(const Request &req) {
 
     // 对已支持的方法返回 404，说明路径不存在。
     if (req.method() == http::verb::get || req.method() == http::verb::post) {
-        return make_json_response(
+        return make_error_response(
             req.version(),
             http::status::not_found,
-            R"({"error":"not found"})");
+            kErrorInvalidParameter,
+            "not found");
     }
 
     // 其他 HTTP 方法当前未实现。
-    return make_json_response(
+    return make_error_response(
         req.version(),
         http::status::method_not_allowed,
-        R"({"error":"method not allowed"})");
+        kErrorInvalidParameter,
+        "method not allowed");
 }
 
 HttpServer::Response HttpServer::handle_upload_document(const Request &req) {
@@ -501,23 +562,26 @@ HttpServer::Response HttpServer::handle_upload_document(const Request &req) {
     const std::string kb_id = get_header_value(req, "X-Kb-Id").empty() ? "default" : get_header_value(req, "X-Kb-Id");
     // 简单校验：文件名不能为空
     if (raw_filename.empty()) {
-        return make_json_response(
+        return make_error_response(
             req.version(),
             http::status::bad_request,
-            R"({"error":"missing X-Filename header"})");
+            kErrorMissingHeader,
+            "missing X-Filename header");
     }
     // 简单校验：请求体不能为空
     if (req.body().empty()) {
-        return make_json_response(
+        return make_error_response(
             req.version(),
             http::status::bad_request,
-            R"({"error":"empty request body"})");
+            kErrorEmptyBody,
+            "empty request body");
     }
     if (!is_valid_utf8(req.body())) {
-        return make_json_response(
+        return make_error_response(
             req.version(),
             http::status::bad_request,
-            R"({"error":"document must be valid UTF-8 text"})");
+            kErrorInvalidParameter,
+            "document must be valid UTF-8 text");
     }
     // 清洗文件名，防止 ../ 路径穿越
     const std::string safe_filename = sanitize_filename(raw_filename);
@@ -529,10 +593,11 @@ HttpServer::Response HttpServer::handle_upload_document(const Request &req) {
     const std::string file_path = "data/files/" + doc_id + "_" + safe_filename;
     // 写文件磁盘
     if (!write_file(file_path, req.body())) {
-        return make_json_response(
+        return make_error_response(
             req.version(),
             http::status::internal_server_error,
-            R"({"error":"failed to save file"})");
+            kErrorInternal,
+            "failed to save file");
     }
     // 将文档元数据写入数据库
     try {
@@ -628,10 +693,12 @@ HttpServer::Response HttpServer::handle_upload_document(const Request &req) {
         } catch (...) {
             // 这里不再继续抛异常，避免覆盖原始错误
         }
-        return make_json_response(
+        const auto error = classify_internal_error(ex);
+        return make_error_response(
             req.version(),
             http::status::internal_server_error,
-            R"({"error":"failed to index document"})");
+            error.code,
+            error.message);
     }
 }
 
@@ -649,10 +716,12 @@ HttpServer::Response HttpServer::handle_list_documents(const Request &req) {
             build_document_list_json(docs));
     } catch (const std::exception &ex) {
         log_error(std::string("list documents failed: ") + ex.what());
-        return make_json_response(
+        const auto error = classify_internal_error(ex);
+        return make_error_response(
             req.version(),
             http::status::internal_server_error,
-            R"({"error":"failed to list documents"})");
+            error.code,
+            error.message);
     }
 }
 
@@ -662,10 +731,11 @@ HttpServer::Response HttpServer::handle_retrieve(const Request &req) {
     const std::string query = req.body();
     const std::size_t top_k = parse_top_k(req, 3);
     if (query.empty()) {
-        return make_json_response(
+        return make_error_response(
             req.version(),
             http::status::bad_request,
-            R"({"error":"empty query"})");
+            kErrorInvalidParameter,
+            "empty query");
     }
     try {
         // 调用 retriever 做索引
@@ -676,10 +746,12 @@ HttpServer::Response HttpServer::handle_retrieve(const Request &req) {
             build_retrieve_result_json(items));
     } catch (const std::exception &ex) {
         log_error(std::string("retrieve failed: ") + ex.what());
-        return make_json_response(
+        const auto error = classify_internal_error(ex);
+        return make_error_response(
             req.version(),
             http::status::internal_server_error,
-            R"({"error":"retrieve failed"})");
+            error.code,
+            error.message);
     }
 }
 
@@ -690,10 +762,11 @@ HttpServer::Response HttpServer::handle_chat(const Request &req) {
     const std::size_t top_k = parse_top_k(req, 3);
     // 空 query 直接返回 400
     if (query.empty()) {
-        return make_json_response(
+        return make_error_response(
             req.version(),
             http::status::bad_request,
-            R"({"error":"empty query"})");
+            kErrorInvalidParameter,
+            "empty query");
     }
     try {
         // 1. 检索知识库中的相关片段
@@ -709,10 +782,12 @@ HttpServer::Response HttpServer::handle_chat(const Request &req) {
             build_chat_result_json(answer, refs));
     } catch (const std::exception &ex) {
         log_error(std::string("chat request failed: ") + ex.what());
-        return make_json_response(
+        const auto error = classify_internal_error(ex);
+        return make_error_response(
             req.version(),
             http::status::internal_server_error,
-            R"({"error":"chat failed"})");
+            error.code,
+            error.message);
     }
 }
 
@@ -722,12 +797,14 @@ void HttpServer::handle_chat_stream(boost::asio::ip::tcp::socket &socket,
     // 2. X-Top-K 指定检索数量，默认 3
     const std::string query = req.body();
     const std::size_t top_k = parse_top_k(req, 3);
+    bool headers_written = false;
     try {
         // 先写 SSE 响应头
         write_sse_headers(socket, req.version());
+        headers_written = true;
         // query 为空时，直接发 error + done
         if (query.empty()) {
-            write_sse_event(socket, "error", R"({"message":"empty query"})");
+            write_sse_event(socket, "error", build_error_json(kErrorInvalidParameter, "empty query"));
             write_sse_event(socket, "done", R"({})");
             write_sse_end(socket);
             return;
@@ -759,14 +836,22 @@ void HttpServer::handle_chat_stream(boost::asio::ip::tcp::socket &socket,
         log_error(std::string("chat stream failed: ") + ex.what());
         try {
             // 即使出错，也尽量给客户端一个 SSE error 事件
-            write_sse_headers(socket, req.version());
-            std::ostringstream oss;
-            oss << R"({"message":")" << escape_json(ex.what()) << "\"}";
-            write_sse_event(socket, "error", oss.str());
+            if (!headers_written) {
+                write_sse_headers(socket, req.version());
+            }
+            const auto error = classify_internal_error(ex);
+            write_sse_event(socket, "error", build_error_json(error.code, error.message));
             write_sse_event(socket, "done", R"({})");
             write_sse_end(socket);
         } catch (...) {
             // 如果连错误事件都发不出去，就只能静默结束
         }
     }
+}
+
+HttpServer::Response HttpServer::make_error_response(unsigned version,
+                                                     boost::beast::http::status status,
+                                                     unsigned code,
+                                                     const std::string &message) {
+    return make_json_response(version, status, build_error_json(code, message));
 }

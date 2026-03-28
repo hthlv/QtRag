@@ -27,8 +27,10 @@ public:
 
     // 启动监听循环，阻塞当前线程直到进程退出。
     void run();
+
     // 服务启动前，从数据库恢复向量索引
     void initialize_index_from_storage();
+
 public:
     // 当前版本统一使用字符串请求体，便于直接返回 JSON 文本。
     using Request = boost::beast::http::request<boost::beast::http::string_body>;
@@ -58,6 +60,10 @@ private:
 
     // SSE 流式 chat
     void handle_chat_stream(boost::asio::ip::tcp::socket &socket, const Request &req);
+
+    // 返回错误响应
+    Response make_error_response(unsigned version, boost::beast::http::status status, unsigned code,
+                                 const std::string &message);
 
 private:
     // 监听绑定的 IP 地址字符串。
