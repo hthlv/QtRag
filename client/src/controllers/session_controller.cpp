@@ -53,7 +53,10 @@ bool SessionController::saveUserMessage(const QString &sessionId, const QString 
 }
 
 bool SessionController::saveAssistantMessage(const QString &sessionId, const QString &content) {
-    return saveMessage(sessionId, "assistant", content, "done");
+    if (!saveMessage(sessionId, "assistant", content, "done")) {
+        return false;
+    }
+    return renameSessionFromFirstExchangeIfNeeded(sessionId);
 }
 
 bool SessionController::touchSession(const QString &sessionId) {
@@ -95,4 +98,48 @@ bool SessionController::saveMessage(const QString &sessionId,
         return false;
     }
     return touchSession(sessionId);
+}
+
+bool SessionController::renameSessionFromFirstExchangeIfNeeded(const QString &sessionId) {
+    if (!sessionRepo_ || !messageRepo_ || sessionId.trimmed().isEmpty()) {
+        return false;
+    }
+    const auto session = sessionRepo_->findById(sessionId);
+    if (!session.has_value()) {
+        return false;
+    }
+    if (!isDefaultSessionTitle(session->title)) {
+        return true;
+    }
+
+    const auto messages = messageRepo_->listBySessionId(sessionId);
+    QString firstUserMessage;
+    bool hasAssistantMessage = false;
+    for (const auto &message: messages) {
+        if (firstUserMessage.isEmpty() && message.role == "user" && !message.content.trimmed().isEmpty()) {
+            firstUserMessage = message.content;
+        }
+        if (message.role == "assistant" && !message.content.trimmed().isEmpty()) {
+            hasAssistantMessage = true;
+        }
+        if (!firstUserMessage.isEmpty() && hasAssistantMessage) {
+            break;
+        }
+    }
+    if (firstUserMessage.isEmpty() || !hasAssistantMessage) {
+        return true;
+    }
+
+    const QString newTitle = generateSessionTitle(firstUserMessage);
+    if (newTitle.isEmpty() || newTitle == session->title) {
+        return true;
+    }
+    return sessionRepo_->updateTitle(sessionId, newTitle, QDateTime::currentSecsSinceEpoch());
+}
+
+bool SessionController::isDefaultSessionTitle(const QString &title) const {
+    static const QRegularExpression defaultTitlePattern(
+        "^新会话 \\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$"
+    );
+    return defaultTitlePattern.match(title.trimmed()).hasMatch();
 }

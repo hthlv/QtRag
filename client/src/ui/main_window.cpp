@@ -123,7 +123,7 @@ void MainWindow::setupUi() {
         }
         // 如果当前还没有会话，就先创建一个
         if (currentSessionId_.isEmpty()) {
-            if (!createNewSession(text)) {
+            if (!createNewSession()) {
                 return;
             }
         }
@@ -212,6 +212,9 @@ void MainWindow::sendChatRequest(const QString &query) {
         // 显示 AI 回答
         chatView_->append("AI: " + answer);
         chatView_->append("");
+        if (!saveMessageToLocal("assistant", answer)) {
+            statusBar()->showMessage("AI 消息保存失败");
+        }
         // 渲染右侧引用区
         renderReferences(data);
         statusBar()->showMessage("回答完成");
@@ -432,14 +435,11 @@ void MainWindow::loadSessionsFromLocal() {
     }
 }
 
-bool MainWindow::createNewSession(const QString &title) {
+bool MainWindow::createNewSession() {
     if (!sessionController_) {
         return false;
     }
-    const QString sessionTitle = title.trimmed().isEmpty()
-                                     ? QString()
-                                     : sessionController_->generateSessionTitle(title);
-    const QString sessionId = sessionController_->createSession(sessionTitle);
+    const QString sessionId = sessionController_->createSession();
     if (sessionId.isEmpty()) {
         QMessageBox::warning(this, "错误", "创建会话失败");
         return false;

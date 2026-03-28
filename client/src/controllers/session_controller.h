@@ -30,6 +30,8 @@ private:
                      const QString &role,
                      const QString &content,
                      const QString &status);
+    bool renameSessionFromFirstExchangeIfNeeded(const QString &sessionId);
+    bool isDefaultSessionTitle(const QString &title) const;
 
     SessionRepository *sessionRepo_;
     MessageRepository *messageRepo_;

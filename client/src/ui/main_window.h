@@ -68,7 +68,7 @@ private:
     void loadSessionsFromLocal();
 
     // 创建新会话
-    bool createNewSession(const QString &title = QString());
+    bool createNewSession();
 
     // 切换会话
     void switchToSession(const QString &sessionId);

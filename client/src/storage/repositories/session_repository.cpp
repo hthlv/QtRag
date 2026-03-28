@@ -100,3 +100,20 @@ bool SessionRepository::touch(const QString &id, qint64 updatedAt) {
     }
     return true;
 }
+
+bool SessionRepository::updateTitle(const QString &id, const QString &title, qint64 updatedAt) {
+    QSqlQuery query(db_);
+    query.prepare(R"(
+        UPDATE sessions
+        SET title = ?, updated_at = ?
+        WHERE id = ?
+    )");
+    query.addBindValue(title);
+    query.addBindValue(updatedAt);
+    query.addBindValue(id);
+    if (!query.exec()) {
+        qWarning() << "update session title failed:" << query.lastError().text();
+        return false;
+    }
+    return true;
+}

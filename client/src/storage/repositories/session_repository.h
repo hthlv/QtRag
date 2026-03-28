@@ -26,6 +26,9 @@ public:
     // 更新会话更新时间
     bool touch(const QString &id, qint64 updatedAt);
 
+    // 更新会话标题和更新时间
+    bool updateTitle(const QString &id, const QString &title, qint64 updatedAt);
+
 private:
     // 当前仓储使用的数据库连接。
     QSqlDatabase db_;
