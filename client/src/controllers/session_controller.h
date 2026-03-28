@@ -22,6 +22,8 @@ public:
     bool saveUserMessage(const QString &sessionId, const QString& content);
     // 保存AI的消息
     bool saveAssistantMessage(const QString &sessionId, const QString &content);
+    // 删除会话及其全部本地消息。
+    bool deleteSession(const QString &sessionId);
     bool touchSession(const QString &sessionId);
     // 生成会话标题
     QString generateSessionTitle(const QString &firstUserMessage) const;

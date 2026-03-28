@@ -14,6 +14,7 @@ class QWebEngineView;
 #endif
 class QPushButton;
 class QLabel;
+class QPoint;
 class QNetworkAccessManager;
 class QNetworkReply;
 class SessionRepository;
@@ -43,6 +44,18 @@ private:
 
     // 创建菜单栏和对应的占位动作。
     void setupMenu();
+
+    // 打开会话列表右键菜单。
+    void showSessionContextMenu(const QPoint &pos);
+
+    // 返回当前选中的会话 ID；没有选中时返回空。
+    QString selectedSessionId() const;
+
+    // 删除指定会话，并在删除后维护列表选中与聊天区状态。
+    bool deleteSession(const QString &sessionId);
+
+    // 从当前选中项触发删除流程。
+    void deleteSelectedSession();
 
     // 非流式接口
     // 发送聊天请求

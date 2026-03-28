@@ -59,6 +59,18 @@ bool SessionController::saveAssistantMessage(const QString &sessionId, const QSt
     return renameSessionFromFirstExchangeIfNeeded(sessionId);
 }
 
+bool SessionController::deleteSession(const QString &sessionId) {
+    if (!sessionRepo_ || !messageRepo_ || sessionId.trimmed().isEmpty()) {
+        return false;
+    }
+
+    // 删除顺序必须先消息后会话，避免数据库里留下关联脏数据。
+    if (!messageRepo_->removeBySessionId(sessionId)) {
+        return false;
+    }
+    return sessionRepo_->removeById(sessionId);
+}
+
 bool SessionController::touchSession(const QString &sessionId) {
     if (!sessionRepo_ || sessionId.trimmed().isEmpty()) {
         return false;

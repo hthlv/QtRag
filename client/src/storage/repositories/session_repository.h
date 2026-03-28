@@ -17,6 +17,9 @@ public:
     // 插入会话记录。
     bool insert(const SessionRecord &session);
 
+    // 删除会话
+    bool removeById(const QString &sessionId);
+
     // 获取全部会话，按更新时间倒序。
     QVector<SessionRecord> listAll();
 

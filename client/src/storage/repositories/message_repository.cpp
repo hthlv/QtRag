@@ -31,6 +31,21 @@ bool MessageRepository::insert(const MessageRecord &message) {
     return true;
 }
 
+bool MessageRepository::removeBySessionId(const QString &sessionId) {
+    // 会话删除前需要先把关联消息删掉，避免本地数据库残留孤儿记录。
+    QSqlQuery query(db_);
+    query.prepare(R"(
+        DELETE FROM messages
+        WHERE session_id = ?
+    )");
+    query.addBindValue(sessionId);
+    if (!query.exec()) {
+        qWarning() << "remove messages by session id failed:" << query.lastError().text();
+        return false;
+    }
+    return true;
+}
+
 QVector<MessageRecord> MessageRepository::listBySessionId(const QString &sessionId) {
     QSqlQuery query(db_);
     QVector<MessageRecord> result;

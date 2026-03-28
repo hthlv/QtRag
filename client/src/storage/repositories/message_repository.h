@@ -16,6 +16,9 @@ public:
     // 插入单条消息。
     bool insert(const MessageRecord &message);
 
+    // 按会话 ID 删除该会话下的全部消息。
+    bool removeBySessionId(const QString &sessionId);
+
     // 按会话 ID 获取消息列表，按创建时间升序。
     QVector<MessageRecord> listBySessionId(const QString &sessionId);
 

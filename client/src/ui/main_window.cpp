@@ -15,6 +15,7 @@
 #include <QMenuBar>
 #include <QMenu>
 #include <QAction>
+#include <QPoint>
 #include <QSplitter>
 #include <QListWidget>
 #include <QTextEdit>
@@ -92,12 +93,17 @@ void MainWindow::setupUi() {
     leftLayout->addWidget(sessionTitle);
     leftList_ = new QListWidget(this);
     leftList_->setObjectName("SessionList");
+    // 会话列表支持右键菜单，便于直接删除当前会话。
+    leftList_->setContextMenuPolicy(Qt::CustomContextMenu);
     leftLayout->addWidget(leftList_);
     // 点击某个会话时，切换并加载本地历史消息
     connect(leftList_, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
         if (!item) return;
         QString sessionId = item->data(Qt::UserRole).toString();
         switchToSession(sessionId);
+    });
+    connect(leftList_, &QListWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
+        showSessionContextMenu(pos);
     });
 
     // 中间区域展示聊天记录，并提供输入框和发送按钮。
@@ -259,6 +265,7 @@ void MainWindow::setupMenu() {
     auto *actionSettings = fileMenu->addAction("设置");
     auto *sessionMenu = menuBar()->addMenu("会话");
     auto *actionNewSession = sessionMenu->addAction("新建会话");
+    auto *actionDeleteSession = sessionMenu->addAction("删除会话");
     // 打开文档管理页
     connect(actionImport, &QAction::triggered, this, [this]() {
         DocumentPage page(serverBaseUrl_, this);
@@ -275,6 +282,90 @@ void MainWindow::setupMenu() {
     connect(actionNewSession, &QAction::triggered, this, [this]() {
         createNewSession();
     });
+    connect(actionDeleteSession, &QAction::triggered, this, [this]() {
+        deleteSelectedSession();
+    });
+}
+
+void MainWindow::showSessionContextMenu(const QPoint &pos) {
+    if (!leftList_) {
+        return;
+    }
+
+    // 右键位置如果命中了某个会话项，就先切换选中，保证菜单动作作用对象明确。
+    if (auto *item = leftList_->itemAt(pos)) {
+        leftList_->setCurrentItem(item);
+    }
+
+    QMenu menu(this);
+    auto *deleteAction = menu.addAction("删除会话");
+    deleteAction->setEnabled(!selectedSessionId().isEmpty());
+    connect(deleteAction, &QAction::triggered, this, [this]() {
+        deleteSelectedSession();
+    });
+    menu.exec(leftList_->viewport()->mapToGlobal(pos));
+}
+
+QString MainWindow::selectedSessionId() const {
+    if (!leftList_ || !leftList_->currentItem()) {
+        return {};
+    }
+    return leftList_->currentItem()->data(Qt::UserRole).toString();
+}
+
+bool MainWindow::deleteSession(const QString &sessionId) {
+    if (!sessionController_ || sessionId.trimmed().isEmpty()) {
+        return false;
+    }
+
+    if (!sessionController_->deleteSession(sessionId)) {
+        QMessageBox::warning(this, "错误", "删除会话失败");
+        return false;
+    }
+
+    // 删除完成后重新加载列表，再决定切到哪个会话；如果已经没有会话则清空聊天区。
+    loadSessionsFromLocal();
+    if (currentSessionId_ == sessionId) {
+        currentSessionId_.clear();
+        currentAiMessageBuffer_.clear();
+        aiMessageStarted_ = false;
+        chatMessages_.clear();
+        renderChatMessages();
+        referenceList_->clearReferences();
+
+        if (leftList_ && leftList_->count() > 0) {
+            auto *item = leftList_->item(0);
+            leftList_->setCurrentItem(item);
+            switchToSession(item->data(Qt::UserRole).toString());
+        } else {
+            statusBar()->showMessage("会话已删除");
+        }
+        return true;
+    }
+
+    restoreSessionSelection(currentSessionId_);
+    statusBar()->showMessage("会话已删除");
+    return true;
+}
+
+void MainWindow::deleteSelectedSession() {
+    const QString sessionId = selectedSessionId();
+    if (sessionId.isEmpty()) {
+        QMessageBox::information(this, "提示", "请先选择一个会话");
+        return;
+    }
+
+    const auto session = sessionRepo_ ? sessionRepo_->findById(sessionId) : std::nullopt;
+    const QString sessionTitle = session.has_value() ? session->title : "当前会话";
+    const auto confirm = QMessageBox::question(
+        this,
+        "删除会话",
+        QString("确认删除会话“%1”吗？\n本地消息记录也会一并删除。").arg(sessionTitle));
+    if (confirm != QMessageBox::Yes) {
+        return;
+    }
+
+    deleteSession(sessionId);
 }
 
 void MainWindow::sendChatRequest(const QString &query) {

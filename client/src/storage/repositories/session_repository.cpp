@@ -31,6 +31,21 @@ bool SessionRepository::insert(const SessionRecord &session) {
     return true;
 }
 
+bool SessionRepository::removeById(const QString &sessionId) {
+    QSqlQuery query(db_);
+    // 删除单个会话记录；调用方负责先清理关联消息。
+    query.prepare(R"(
+        DELETE FROM sessions
+        WHERE id = ?
+    )");
+    query.addBindValue(sessionId);
+    if (!query.exec()) {
+        qWarning() << "remove session failed:" << query.lastError().text();
+        return false;
+    }
+    return true;
+}
+
 QVector<SessionRecord> SessionRepository::listAll() {
     QSqlQuery query(db_);
     QVector<SessionRecord> result;
