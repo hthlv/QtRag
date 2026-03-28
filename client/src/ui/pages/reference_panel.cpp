@@ -24,6 +24,7 @@
 ReferencePanel::ReferencePanel(QWidget *parent)
     : QWidget(parent) {
     setObjectName("ReferencePanel");
+    setMinimumWidth(280);
 
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -36,6 +37,8 @@ ReferencePanel::ReferencePanel(QWidget *parent)
 #ifdef QTRAG_CLIENT_HAS_WEBENGINE
     referenceView_ = new QWebEngineView(this);
     referenceView_->setObjectName("ReferenceView");
+    // 引用区同样关闭默认右键菜单，只保留业务展示能力。
+    referenceView_->setContextMenuPolicy(Qt::NoContextMenu);
     // 允许本地页面访问 CDN，加载 marked 与 KaTeX 资源。
     referenceView_->settings()->setAttribute(QWebEngineSettings::LocalContentCanAccessRemoteUrls, true);
     referenceViewReady_ = false;
@@ -104,6 +107,8 @@ a { color: #1b7f4f; text-decoration: none; }
 #endif
 
     layout->addWidget(referenceView_, 1);
+    // 构造完成后立即渲染空态，占位区域保持稳定。
+    clearReferences();
 }
 
 void ReferencePanel::setReferences(const QJsonArray &refs) {
@@ -117,7 +122,14 @@ void ReferencePanel::setReferences(const QJsonArray &refs) {
     QString html;
     html += "<div style='padding: 2px 0 6px 0;'>";
     if (refs.isEmpty()) {
-        html += "<div style='color:#808080; font-size:13px; padding:8px 6px;'>无引用片段</div>";
+        html += QString::fromUtf8(R"(
+<div style="min-height:180px; display:flex; align-items:center; justify-content:center; padding:12px 8px;">
+  <div style="width:100%; border:1px dashed #d5d5d5; border-radius:12px; background:#fcfcfc; padding:18px 16px; text-align:center;">
+    <div style="font-size:14px; font-weight:700; color:#3a3a3a; margin-bottom:6px;">引用片段会显示在这里</div>
+    <div style="font-size:12px; color:#8a8a8a; line-height:1.6;">发起一次问答后，命中的文档片段、分数和 Markdown 内容会在右侧展开。</div>
+  </div>
+</div>
+)");
         html += "</div>";
         referenceView_->setHtml(html);
         return;
@@ -191,9 +203,30 @@ QString ReferencePanel::buildReferencePageHtml() const {
       line-height: 1.5;
     }
     .empty {
-      color: #808080;
-      font-size: 13px;
-      padding: 8px 6px;
+      min-height: 180px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 12px 8px;
+    }
+    .empty-card {
+      width: 100%;
+      border: 1px dashed #d5d5d5;
+      border-radius: 12px;
+      background: #fcfcfc;
+      padding: 18px 16px;
+      text-align: center;
+    }
+    .empty-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: #3a3a3a;
+      margin-bottom: 6px;
+    }
+    .empty-desc {
+      font-size: 12px;
+      color: #8a8a8a;
+      line-height: 1.6;
     }
     .ref-card {
       margin: 0 0 10px 0;
@@ -293,6 +326,17 @@ QString ReferencePanel::buildReferencePageHtml() const {
       }
     }
 
+    function renderEmptyState() {
+      return (
+        '<div class="empty">' +
+          '<div class="empty-card">' +
+            '<div class="empty-title">引用片段会显示在这里</div>' +
+            '<div class="empty-desc">发起一次问答后，命中的文档片段、分数和 Markdown 内容会在右侧展开。</div>' +
+          '</div>' +
+        '</div>'
+      );
+    }
+
     window.setReferences = function(items) {
       const root = document.getElementById("refs-root");
       if (!root) {
@@ -300,7 +344,7 @@ QString ReferencePanel::buildReferencePageHtml() const {
       }
       window.__pendingReferences = Array.isArray(items) ? items : [];
       if (window.__pendingReferences.length === 0) {
-        root.innerHTML = '<div class="empty">无引用片段</div>';
+        root.innerHTML = renderEmptyState();
         return;
       }
 

@@ -108,6 +108,8 @@ void MainWindow::setupUi() {
 #ifdef QTRAG_CLIENT_HAS_WEBENGINE
     chatView_ = new QWebEngineView(this);
     chatView_->setObjectName("ChatView");
+    // 聊天区不需要浏览器默认右键菜单，避免暴露无关操作。
+    chatView_->setContextMenuPolicy(Qt::NoContextMenu);
     // 允许本地 HTML 页面加载 CDN 的 KaTeX/marked 资源。
     chatView_->settings()->setAttribute(QWebEngineSettings::LocalContentCanAccessRemoteUrls, true);
     chatViewReady_ = false;
@@ -195,9 +197,12 @@ a { color: #1b7f4f; text-decoration: none; }
     // 右侧区域预留给检索命中的引用片段。
     auto *rightPanel = new QWidget(this);
     rightPanel->setObjectName("RightPanel");
+    // 给引用栏一个更稳定的初始宽度，避免启动时占位过窄。
+    rightPanel->setMinimumWidth(220);
     auto *rightLayout = new QVBoxLayout(rightPanel);
     rightLayout->setContentsMargins(18, 18, 18, 18);
     referenceList_ = new ReferencePanel(this);
+    referenceList_->setMinimumWidth(220);
     rightLayout->addWidget(referenceList_);
 
     // 三栏布局
@@ -208,6 +213,8 @@ a { color: #1b7f4f; text-decoration: none; }
     splitter->setStretchFactor(1, 3);
     splitter->setStretchFactor(2, 1);
     splitter->setChildrenCollapsible(false);
+    // 初始分栏比例向聊天区倾斜，但保证右侧引用栏有可读宽度。
+    splitter->setSizes({260, 780, 220});
     rootLayout->addWidget(splitter);
     inputEdit_->setFocus();
 
