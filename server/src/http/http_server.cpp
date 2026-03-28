@@ -412,6 +412,8 @@ HttpServer::HttpServer(const AppConfig &config, sqlite3 *db)
           &db_mutex_)),
       prompt_builder_(std::make_unique<PromptBuilder>()),
       llm_client_(create_llm_client(config)) {
+    // 构造完成后统一注册所有 HTTP 路由，后续扩展接口时只需要改这里。
+    register_routes();
 }
 
 HttpServer::~HttpServer() = default;
@@ -443,6 +445,37 @@ void HttpServer::initialize_index_from_storage() {
     log_info("http", oss.str());
 }
 
+void HttpServer::register_routes() {
+    // 健康检查。
+    router_.add_json_route(http::verb::get, "/health", [this](const Request &req) {
+        (void)this;
+        return make_json_response(
+            req.version(),
+            http::status::ok,
+            R"({"status":"ok"})");
+    });
+
+    // 文档接口。
+    router_.add_json_route(http::verb::get, "/api/v1/docs", [this](const Request &req) {
+        return handle_list_documents(req);
+    });
+    router_.add_json_route(http::verb::post, "/api/v1/docs/upload", [this](const Request &req) {
+        return handle_upload_document(req);
+    });
+
+    // 检索与聊天接口。
+    router_.add_json_route(http::verb::post, "/api/v1/retrieve", [this](const Request &req) {
+        return handle_retrieve(req);
+    });
+    router_.add_json_route(http::verb::post, "/api/v1/chat", [this](const Request &req) {
+        return handle_chat(req);
+    });
+    router_.add_stream_route(http::verb::post, "/api/v1/chat/stream",
+                             [this](tcp::socket &socket, const Request &req) {
+                                 handle_chat_stream(socket, req);
+                             });
+}
+
 void HttpServer::do_accept_loop() {
     auto ip_address = asio::ip::make_address(address_);
     tcp::endpoint endpoint{ip_address, port_};
@@ -472,16 +505,19 @@ void HttpServer::handle_connection(tcp::socket socket) {
         oss << "Incoming request: " << method_to_string(req.method()) << " " << req.target();
         log_info("http", oss.str());
 
-        // 流式接口单独处理
-        if (req.method() == http::verb::post && req.target() == "/api/v1/chat/stream") {
-            handle_chat_stream(socket, req);
+        // 所有接口都先经过 router 做 method + path 匹配。
+        const auto matched_route = router_.match(req.method(), req.target());
+        if (matched_route.found && matched_route.type == HttpRouter::RouteType::Stream) {
+            matched_route.stream_handler(socket, req);
             beast::error_code ec;
             socket.shutdown(tcp::socket::shutdown_send, ec);
             return;
         }
 
-        // 其他请求仍走普通分发逻辑
-        auto res = handle_request(req);
+        // 普通 JSON 路由直接调用 handler；未命中时返回统一错误响应。
+        auto res = matched_route.found
+                       ? matched_route.json_handler(req)
+                       : make_route_error_response(req);
         // 先把响应完整写回，再主动关闭发送方向。
         http::write(socket, res);
         beast::error_code ec;
@@ -493,37 +529,9 @@ void HttpServer::handle_connection(tcp::socket socket) {
     }
 }
 
-HttpServer::Response HttpServer::handle_request(const Request &req) {
-    // 健康检查接口，便于确认服务是否正常存活。
-    if (req.method() == http::verb::get && req.target() == "/health") {
-        return make_json_response(
-            req.version(),
-            http::status::ok,
-            R"({"status":"ok"})");
-    }
-
-    // 获取文档列表
-    if (req.method() == http::verb::get && req.target() == "/api/v1/docs") {
-        return handle_list_documents(req);
-    }
-
-    // 上传文档
-    if (req.method() == http::verb::post && req.target() == "/api/v1/docs/upload") {
-        return handle_upload_document(req);
-    }
-
-    // 检索
-    if (req.method() == http::verb::post && req.target() == "/api/v1/retrieve") {
-        return handle_retrieve(req);
-    }
-
-    // chat
-    if (req.method() == http::verb::post && req.target() == "/api/v1/chat") {
-        return handle_chat(req);
-    }
-
-    // 对已支持的方法返回 404，说明路径不存在。
-    if (req.method() == http::verb::get || req.method() == http::verb::post) {
+HttpServer::Response HttpServer::make_route_error_response(const Request &req) {
+    // 已注册过的 method 但路径不存在，返回 404。
+    if (router_.has_method(req.method())) {
         return make_error_response(
             req.version(),
             http::status::not_found,

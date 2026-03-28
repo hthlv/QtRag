@@ -9,6 +9,7 @@
 #include <memory>
 
 #include "config/app_config.h"
+#include "router.h"
 
 // 前向声明
 struct sqlite3;
@@ -37,14 +38,17 @@ public:
     using Response = boost::beast::http::response<boost::beast::http::string_body>;
 
 private:
+    // 启动时注册所有 HTTP 路由。
+    void register_routes();
+
     // 接收新的 TCP 连接。
     void do_accept_loop();
 
     // 读取单个连接上的 HTTP 请求并返回响应。
     void handle_connection(boost::asio::ip::tcp::socket socket);
 
-    // 统一请求分发入口
-    Response handle_request(const Request &req);
+    // 对未匹配路由的请求生成统一错误响应。
+    Response make_route_error_response(const Request &req);
 
     // 处理上传文档
     Response handle_upload_document(const Request &req);
@@ -86,4 +90,6 @@ private:
     // prompt 与 LLM
     std::unique_ptr<PromptBuilder> prompt_builder_;
     std::unique_ptr<LLMClient> llm_client_;
+    // 独立 router，负责 method + path 到 handler 的映射关系。
+    HttpRouter router_;
 };
