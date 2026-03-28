@@ -15,9 +15,9 @@
 #include "storage/repositories/document_repository.h"
 #include "storage/repositories/chunk_repository.h"
 #include "storage/repositories/embedding_repository.h"
+#include "utils/logger.h"
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
-#include <iostream>
 #include <sstream>
 #include <chrono>
 #include <cctype>
@@ -79,16 +79,6 @@ namespace {
     // 把枚举形式的 HTTP 方法转成便于日志输出的字符串。
     std::string method_to_string(http::verb method) {
         return std::string(http::to_string(method));
-    }
-
-    // 输出普通运行日志。
-    void log_info(const std::string &message) {
-        std::cout << "[INFO] " << message << "\n";
-    }
-
-    // 输出错误日志。
-    void log_error(const std::string &message) {
-        std::cerr << "[ERROR] " << message << "\n";
     }
 
     std::string to_lower_copy(const std::string &text) {
@@ -436,8 +426,8 @@ HttpServer::~HttpServer() = default;
 
 void HttpServer::run() {
     std::ostringstream oss;
-    oss << "Starting server on " << address_ << ":" << port_ << "\n";
-    log_info(oss.str());
+    oss << "Starting server on " << address_ << ":" << port_;
+    log_info("http", oss.str());
 
     do_accept_loop();
     worker_pool_.join();
@@ -457,7 +447,7 @@ void HttpServer::initialize_index_from_storage() {
     }
     std::ostringstream oss;
     oss << "Restored persisted vector index entries: " << records.size();
-    log_info(oss.str());
+    log_info("http", oss.str());
 }
 
 void HttpServer::do_accept_loop() {
@@ -465,8 +455,8 @@ void HttpServer::do_accept_loop() {
     tcp::endpoint endpoint{ip_address, port_};
     tcp::acceptor acceptor{ioc_, endpoint};
     std::ostringstream oss;
-    oss << "Server listening at http://" << address_ << ":" << port_ << "\n";
-    log_info(oss.str());
+    oss << "Server listening at http://" << address_ << ":" << port_;
+    log_info("http", oss.str());
     for (;;) {
         tcp::socket socket{ioc_};
         acceptor.accept(socket);
@@ -487,7 +477,7 @@ void HttpServer::handle_connection(tcp::socket socket) {
         http::read(socket, buffer, req);
         std::ostringstream oss;
         oss << "Incoming request: " << method_to_string(req.method()) << " " << req.target();
-        log_info(oss.str());
+        log_info("http", oss.str());
 
         // 流式接口单独处理
         if (req.method() == http::verb::post && req.target() == "/api/v1/chat/stream") {
@@ -506,7 +496,7 @@ void HttpServer::handle_connection(tcp::socket socket) {
     } catch (const std::exception &ex) {
         std::ostringstream oss;
         oss << "Connection handling failed: " << ex.what();
-        log_error(oss.str());
+        log_error("http", oss.str());
     }
 }
 
@@ -682,7 +672,7 @@ HttpServer::Response HttpServer::handle_upload_document(const Request &req) {
             http::status::ok,
             oss.str());
     } catch (const std::exception &ex) {
-        log_error(std::string("upload/index document failed: ") + ex.what());
+        log_error("http", std::string("upload/index document failed: ") + ex.what());
         try {
             DocumentRepository docRepo(db_);
             docRepo.update_status_and_chunk_count(
@@ -715,7 +705,7 @@ HttpServer::Response HttpServer::handle_list_documents(const Request &req) {
             http::status::ok,
             build_document_list_json(docs));
     } catch (const std::exception &ex) {
-        log_error(std::string("list documents failed: ") + ex.what());
+        log_error("http", std::string("list documents failed: ") + ex.what());
         const auto error = classify_internal_error(ex);
         return make_error_response(
             req.version(),
@@ -745,7 +735,7 @@ HttpServer::Response HttpServer::handle_retrieve(const Request &req) {
             http::status::ok,
             build_retrieve_result_json(items));
     } catch (const std::exception &ex) {
-        log_error(std::string("retrieve failed: ") + ex.what());
+        log_error("http", std::string("retrieve failed: ") + ex.what());
         const auto error = classify_internal_error(ex);
         return make_error_response(
             req.version(),
@@ -781,7 +771,7 @@ HttpServer::Response HttpServer::handle_chat(const Request &req) {
             http::status::ok,
             build_chat_result_json(answer, refs));
     } catch (const std::exception &ex) {
-        log_error(std::string("chat request failed: ") + ex.what());
+        log_error("http", std::string("chat request failed: ") + ex.what());
         const auto error = classify_internal_error(ex);
         return make_error_response(
             req.version(),
@@ -833,7 +823,7 @@ void HttpServer::handle_chat_stream(boost::asio::ip::tcp::socket &socket,
         // 6. 发送结束块
         write_sse_end(socket);
     } catch (const std::exception &ex) {
-        log_error(std::string("chat stream failed: ") + ex.what());
+        log_error("http", std::string("chat stream failed: ") + ex.what());
         try {
             // 即使出错，也尽量给客户端一个 SSE error 事件
             if (!headers_written) {

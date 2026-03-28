@@ -3,19 +3,8 @@
 //
 
 #include "sqllite_store.h"
-#include <iostream>
+#include "utils/logger.h"
 #include <stdexcept>
-
-namespace {
-    // 统一数据库模块的日志前缀，便于和 HTTP 日志区分。
-    void log_info(const std::string &msg) {
-        std::cout << "[DB][INFO] " << msg << "\n";
-    }
-
-    void log_error(const std::string &msg) {
-        std::cerr << "[DB][ERROR] " << msg << "\n";
-    }
-}
 
 SqlliteStore::SqlliteStore(const std::string &db_path)
     :db_path_(db_path){
@@ -41,14 +30,14 @@ void SqlliteStore::open() {
         db_ = nullptr;
         throw std::runtime_error("Failed to open sqlite db: " + err);
     }
-    log_info("Opened database: "  + db_path_);
+    log_info("db", "Opened database: " + db_path_);
 }
 
 void SqlliteStore::close() {
     if (db_) {
         sqlite3_close(db_);
         db_ = nullptr;
-        log_info("Closed database");
+        log_info("db", "Closed database");
     }
 }
 
@@ -59,7 +48,7 @@ void SqlliteStore::execute(const std::string &sql) {
     if (rc != SQLITE_OK) {
         std::string err = err_msg ? err_msg : "unknown sqlite error";
         sqlite3_free(err_msg);
-        log_error(err);
+        log_error("db", err);
         throw std::runtime_error("SQLite exec failed: " + err);
     }
 }
@@ -106,5 +95,5 @@ void SqlliteStore::initialize_schema() {
     execute(create_chunk_embeddings_sql);
 
     // 只要两张核心表就绪，后端原型就能接受健康检查和后续文档接入。
-    log_info("Initialized schema");
+    log_info("db", "Initialized schema");
 }

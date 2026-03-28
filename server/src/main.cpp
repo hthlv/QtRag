@@ -1,7 +1,7 @@
 #include "config/app_config.h"
 #include "http/http_server.h"
 #include "storage/sqllite_store.h"
-#include <iostream>
+#include "utils/logger.h"
 
 int main() {
     try {
@@ -20,7 +20,7 @@ int main() {
         server.run();
     } catch (const std::exception &e) {
         // 启动阶段出现任何异常都直接终止进程，避免服务处于半可用状态。
-        std::cerr << "[Fatal Error] " << e.what() << "\n";
+        log_fatal("main", e.what());
         return 1;
     }
 
