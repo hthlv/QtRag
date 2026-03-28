@@ -145,4 +145,6 @@ private:
     QString currentAiMessageBuffer_;
 
     QString serverBaseUrl_{"http://127.0.0.1:8080"};
+    // 当前聊天请求使用的检索 Top-K。
+    int topK_{3};
 };

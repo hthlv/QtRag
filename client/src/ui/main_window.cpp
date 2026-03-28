@@ -43,6 +43,7 @@
 #include <QWebEngineSettings>
 #endif
 #include <QtGlobal>
+#include <algorithm>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent),
@@ -283,7 +284,7 @@ void MainWindow::sendChatRequest(const QString &query) {
     // 请求体直接放 query 文本
     // X-Top-K 指定检索数量
     request.setHeader(QNetworkRequest::ContentTypeHeader, "text/plain; charset=utf-8");
-    request.setRawHeader("X-Top-K", "3");
+    request.setRawHeader("X-Top-K", QByteArray::number(topK_));
     // 发送中禁止按钮，防止重复点击
     sendButton_->setEnabled(false);
     statusBar()->showMessage("正在请求服务端...");
@@ -353,7 +354,7 @@ void MainWindow::sendChatStreamRequest(const QString &query) {
     QUrl url(serverBaseUrl_ + "/api/v1/chat/stream");
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::ContentTypeHeader, "text/plain; charset=utf-8");
-    request.setRawHeader("X-Top-K", "3");
+    request.setRawHeader("X-Top-K", QByteArray::number(topK_));
     sendButton_->setEnabled(false);
     statusBar()->showMessage("正在流式请求服务端");
     currentReply_ = networkManager_->post(request, query.toUtf8());
@@ -514,12 +515,23 @@ void MainWindow::loadSettingsFromLocal() {
     if (!settingsRepo_) {
         return;
     }
+
+    // 服务端地址为空时回退到本地默认值。
     auto value = settingsRepo_->getValue("server_url");
     if (value.has_value() && !value->trimmed().isEmpty()) {
         serverBaseUrl_ = *value;
     } else {
         serverBaseUrl_ = "http://127.0.0.1:8080";
     }
+
+    // Top-K 统一限制在 1~20，避免把非法值带到请求头。
+    auto topkValue = settingsRepo_->getValue("top_k");
+    bool ok = false;
+    int parsedTopK = topkValue.has_value() ? topkValue->toInt(&ok) : 3;
+    if (!ok) {
+        parsedTopK = 3;
+    }
+    topK_ = std::clamp(parsedTopK, 1, 20);
 }
 
 void MainWindow::loadSessionsFromLocal() {

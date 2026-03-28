@@ -7,6 +7,7 @@
 class QLineEdit;
 class QPushButton;
 class SettingsRepository;
+class QSpinBox;
 
 // 设置页：当前先支持配置服务端地址
 class SettingsDialog : public QDialog {
@@ -20,6 +21,8 @@ private:
 private:
     SettingsRepository *settingsRepo_{nullptr};
     QLineEdit *serverUrlEdit_{nullptr};
+    // Top-K 设置
+    QSpinBox *topkkSpinBox_{nullptr};
     QPushButton *saveButton_{nullptr};
     QPushButton *cancelButton_{nullptr};
 };
