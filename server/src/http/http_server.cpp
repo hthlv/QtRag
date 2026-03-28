@@ -341,6 +341,24 @@ namespace {
         return oss.str();
     }
 
+    // 将 embedding 重建结果拼成 JSON，便于客户端展示执行范围和统计数量。
+    std::string build_regenerate_embeddings_result_json(const std::string &scope,
+                                                        const std::string &doc_id,
+                                                        std::size_t document_count,
+                                                        std::size_t chunk_count) {
+        std::ostringstream oss;
+        oss << "{"
+            << R"("scope":")" << escape_json(scope) << "\","
+            << R"("document_count":)" << document_count << ","
+            << R"("chunk_count":)" << chunk_count << ","
+            << R"("status":"reindexed")";
+        if (!doc_id.empty()) {
+            oss << "," << R"("doc_id":")" << escape_json(doc_id) << "\"";
+        }
+        oss << "}";
+        return oss.str();
+    }
+
     // 将 references 单独拼成 JSON，供 SSE refs 事件使用
     std::string build_references_json(const std::vector<RetrievedChunk> &refs) {
         std::ostringstream oss;
@@ -429,10 +447,15 @@ void HttpServer::run() {
 }
 
 void HttpServer::initialize_index_from_storage() {
+    reload_vector_store_from_storage();
+}
+
+void HttpServer::reload_vector_store_from_storage() {
     // 启动阶段从数据库加载 embedding，恢复内存向量索引
     std::lock_guard<std::mutex> lock(db_mutex_);
     EmbeddingRepository embeddingRepo(db_);
     auto records = embeddingRepo.list_all();
+    vector_store_->clear();
     for (const auto &record: records) {
         vector_store_->add(
             record.chunk_id,
@@ -469,6 +492,9 @@ void HttpServer::register_routes() {
     });
     router_.add_json_route(http::verb::post, "/api/v1/chat", [this](const Request &req) {
         return handle_chat(req);
+    });
+    router_.add_json_route(http::verb::post, "/api/v1/embeddings/regenerate", [this](const Request &req) {
+        return handle_regenerate_embeddings(req);
     });
     router_.add_stream_route(http::verb::post, "/api/v1/chat/stream",
                              [this](tcp::socket &socket, const Request &req) {
@@ -773,6 +799,95 @@ HttpServer::Response HttpServer::handle_chat(const Request &req) {
             build_chat_result_json(answer, refs));
     } catch (const std::exception &ex) {
         log_error("http", std::string("chat request failed: ") + ex.what());
+        const auto error = classify_internal_error(ex);
+        return make_error_response(
+            req.version(),
+            http::status::internal_server_error,
+            error.code,
+            error.message);
+    }
+}
+
+HttpServer::Response HttpServer::handle_regenerate_embeddings(const Request &req) {
+    // 可选请求头 X-Doc-Id：不传则全量重建，传入则只重建指定文档。
+    const std::string doc_id = get_header_value(req, "X-Doc-Id");
+
+    try {
+        std::vector<DocumentRecord> target_docs;
+        {
+            // 先在数据库里确定本次要处理哪些文档，但不把 embedding 调用放在数据库锁内。
+            std::lock_guard<std::mutex> lock(db_mutex_);
+            DocumentRepository doc_repo(db_);
+            if (!doc_id.empty()) {
+                const auto document = doc_repo.find_by_id(doc_id);
+                if (!document.has_value()) {
+                    return make_error_response(
+                        req.version(),
+                        http::status::not_found,
+                        kErrorInvalidParameter,
+                        "document not found");
+                }
+                target_docs.push_back(*document);
+            } else {
+                target_docs = doc_repo.listAll();
+            }
+        }
+
+        ChunkRepository chunk_repo(db_);
+        EmbeddingRepository embedding_repo(db_);
+
+        std::size_t regenerated_chunk_count = 0;
+        for (const auto &document : target_docs) {
+            std::vector<ChunkRecord> chunks;
+            {
+                // 每个文档的 chunk 先读出来，后面在锁外调用 embedding provider。
+                std::lock_guard<std::mutex> lock(db_mutex_);
+                chunks = chunk_repo.list_by_doc_id(document.id);
+            }
+
+            std::vector<EmbeddingRecord> regenerated_records;
+            regenerated_records.reserve(chunks.size());
+            for (const auto &chunk : chunks) {
+                EmbeddingRecord record;
+                record.chunk_id = chunk.id;
+                record.doc_id = chunk.doc_id;
+                record.content = chunk.content;
+                record.embedding = embedding_client_->embed(chunk.content);
+                record.created_at = current_timestamp();
+                regenerated_records.push_back(std::move(record));
+            }
+
+            {
+                // embedding 结果统一回写数据库，并刷新文档状态时间戳。
+                std::lock_guard<std::mutex> lock(db_mutex_);
+                for (const auto &record : regenerated_records) {
+                    embedding_repo.insert_or_replace(record);
+                }
+
+                DocumentRepository doc_repo(db_);
+                doc_repo.update_status_and_chunk_count(
+                    document.id,
+                    "indexed",
+                    static_cast<int>(chunks.size()),
+                    current_timestamp());
+            }
+
+            regenerated_chunk_count += regenerated_records.size();
+        }
+
+        // 持久化完成后，用数据库中的最新 embedding 全量刷新内存索引，避免旧向量残留。
+        reload_vector_store_from_storage();
+
+        return make_json_response(
+            req.version(),
+            http::status::ok,
+            build_regenerate_embeddings_result_json(
+                doc_id.empty() ? "all" : "single",
+                doc_id,
+                target_docs.size(),
+                regenerated_chunk_count));
+    } catch (const std::exception &ex) {
+        log_error("http", std::string("regenerate embeddings failed: ") + ex.what());
         const auto error = classify_internal_error(ex);
         return make_error_response(
             req.version(),

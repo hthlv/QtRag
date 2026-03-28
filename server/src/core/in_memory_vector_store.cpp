@@ -23,6 +23,12 @@ void InMemoryVectorStore::add(const std::string &chunk_id,
     entries_.push_back(std::move(entry));
 }
 
+void InMemoryVectorStore::clear() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    // embedding 全量重建后，先把旧索引彻底清空，再按数据库最新记录恢复。
+    entries_.clear();
+}
+
 std::vector<VectorSearchHit> InMemoryVectorStore::search(
     const std::vector<float> &query_embedding,
     std::size_t top_k) const {

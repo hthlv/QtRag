@@ -50,6 +50,9 @@ private:
     // 对未匹配路由的请求生成统一错误响应。
     Response make_route_error_response(const Request &req);
 
+    // 从持久化 embedding 表重新加载内存向量索引。
+    void reload_vector_store_from_storage();
+
     // 处理上传文档
     Response handle_upload_document(const Request &req);
 
@@ -61,6 +64,9 @@ private:
 
     // 非流式 chat 接口
     Response handle_chat(const Request &req);
+
+    // 重新生成 embedding，支持单文档和全量重建。
+    Response handle_regenerate_embeddings(const Request &req);
 
     // SSE 流式 chat
     void handle_chat_stream(boost::asio::ip::tcp::socket &socket, const Request &req);

@@ -198,11 +198,11 @@ a { color: #1b7f4f; text-decoration: none; }
     auto *rightPanel = new QWidget(this);
     rightPanel->setObjectName("RightPanel");
     // 给引用栏一个更稳定的初始宽度，避免启动时占位过窄。
-    rightPanel->setMinimumWidth(220);
+    rightPanel->setMinimumWidth(260);
     auto *rightLayout = new QVBoxLayout(rightPanel);
     rightLayout->setContentsMargins(18, 18, 18, 18);
     referenceList_ = new ReferencePanel(this);
-    referenceList_->setMinimumWidth(220);
+    referenceList_->setMinimumWidth(260);
     rightLayout->addWidget(referenceList_);
 
     // 三栏布局
@@ -214,7 +214,7 @@ a { color: #1b7f4f; text-decoration: none; }
     splitter->setStretchFactor(2, 1);
     splitter->setChildrenCollapsible(false);
     // 初始分栏比例向聊天区倾斜，但保证右侧引用栏有可读宽度。
-    splitter->setSizes({260, 780, 220});
+    splitter->setSizes({200, 780, 260});
     rootLayout->addWidget(splitter);
     inputEdit_->setFocus();
 

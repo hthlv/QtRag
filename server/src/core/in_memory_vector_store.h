@@ -32,6 +32,9 @@ public:
              const std::string &content,
              const std::vector<float> &embedding);
 
+    // 清空当前内存索引；重建 embedding 后会重新回填。
+    void clear();
+
     // 给定查询向量，返回 top-k 命中结果
     std::vector<VectorSearchHit> search(const std::vector<float> &query_embedding,
                                         std::size_t top_k) const;
