@@ -4,4 +4,6 @@ target_sources(${QTRAG_CLIENT_TARGET}
         document_page.h
         settings_dialog.cpp
         settings_dialog.h
+        reference_panel.cpp
+        reference_panel.h
 )

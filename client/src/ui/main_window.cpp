@@ -5,6 +5,7 @@
 #include "main_window.h"
 #include "pages/document_page.h"
 #include "pages/settings_dialog.h"
+#include "pages/reference_panel.h"
 #include "models/session_record.h"
 #include "models/message_record.h"
 #include "storage/repositories/session_repository.h"
@@ -104,9 +105,7 @@ void MainWindow::setupUi() {
     // 右侧区域预留给检索命中的引用片段。
     auto *rightPanel = new QWidget(this);
     auto *rightLayout = new QVBoxLayout(rightPanel);
-    rightLayout->addWidget(new QLabel("引用片段", this));
-    referenceList_ = new QListWidget(this);
-    referenceList_->addItem("引用片段将显示在这里");
+    referenceList_ = new ReferencePanel(this);
     rightLayout->addWidget(referenceList_);
 
     // 三栏布局
@@ -221,30 +220,15 @@ void MainWindow::sendChatRequest(const QString &query) {
 
 
 void MainWindow::renderReferences(const QByteArray &jsonData) {
-    referenceList_->clear();
+    referenceList_->clearReferences();
     QJsonParseError parseError;
     QJsonDocument doc = QJsonDocument::fromJson(jsonData, &parseError);
     if (parseError.error != QJsonParseError::NoError) {
-        referenceList_->addItem("引用解析失败");
         return;
     }
     QJsonObject root = doc.object();
     QJsonArray refs = root.value("refs").toArray();
-    if (refs.isEmpty()) {
-        referenceList_->addItem("无引用片段");
-        return;
-    }
-    for (const auto &ref: refs) {
-        QJsonObject obj = ref.toObject();
-        QString filename = obj.value("filename").toString();
-        double score = obj.value("score").toDouble();
-        QString text = obj.value("text").toString();
-        QString itemText = QString("[%1] score=%2\n%3")
-                .arg(filename.isEmpty() ? "unknown" : filename)
-                .arg(score, 0, 'f', 3)
-                .arg(text.left(120));
-        referenceList_->addItem(itemText);
-    }
+    referenceList_->setReferences(refs);
 }
 
 void MainWindow::sendChatStreamRequest(const QString &query) {
@@ -256,8 +240,8 @@ void MainWindow::sendChatStreamRequest(const QString &query) {
     // 清空本轮流式状态
     sseBuffer_.clear();
     aiMessageStarted_ = false;
-    referenceList_->clear();
-    referenceList_->addItem("正在等待引用片段");
+    referenceList_->clearReferences();
+    // referenceList_->addItem("正在等待引用片段");
     QUrl url(serverBaseUrl_ + "/api/v1/chat/stream");
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::ContentTypeHeader, "text/plain; charset=utf-8");
@@ -406,22 +390,8 @@ void MainWindow::appendAiStreamText(const QString &text) {
 }
 
 void MainWindow::renderReferencesFromArray(const QJsonArray &refs) {
-    referenceList_->clear();
-    if (refs.isEmpty()) {
-        referenceList_->addItem("无引用片段");
-        return;
-    }
-    for (const auto &value: refs) {
-        QJsonObject obj = value.toObject();
-        QString filename = obj.value("filename").toString();
-        double score = obj.value("score").toDouble();
-        QString text = obj.value("text").toString();
-        QString itemText = QString("[%1] score=%2\n%3")
-                .arg(filename.isEmpty() ? "unknown" : filename)
-                .arg(score, 0, 'f', 3)
-                .arg(text.left(120));
-        referenceList_->addItem(itemText);
-    }
+    referenceList_->clearReferences();
+    referenceList_->setReferences(refs);
 }
 
 void MainWindow::initializeLocalRepositories() {

@@ -14,6 +14,7 @@ class QNetworkReply;
 class SessionRepository;
 class MessageRepository;
 class SettingsRepository;
+class ReferencePanel;
 
 // 主窗口负责组织左侧知识库/会话区、中间聊天区和右侧引用区。
 class MainWindow : public QMainWindow {
@@ -88,7 +89,7 @@ private:
     // 触发发送动作的按钮。
     QPushButton *sendButton_{nullptr};
     // 右侧引用片段展示区。
-    QListWidget *referenceList_{nullptr};
+    ReferencePanel *referenceList_{nullptr};
     // 当前仅保留连接状态字段，后续接入服务端时可以直接复用。
     bool is_connected_{false};
     // HTTP 网络管理器
