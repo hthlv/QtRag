@@ -11,6 +11,7 @@
 #include <QStringList>
 
 namespace {
+// 统一挑选一套可用中文 UI 字体，保证跨平台显示一致性。
 QFont chooseUiFont() {
     const QStringList preferredFamilies = {
         "SF Pro Display",
@@ -36,6 +37,7 @@ QFont chooseUiFont() {
 }
 
 QString buildAppStyleSheet() {
+    // 统一维护客户端全局 QSS，避免控件样式分散在各页面。
     return QString::fromUtf8(R"(
 QWidget {
     color: #1f1f1f;
@@ -233,6 +235,17 @@ QPushButton[variant="primary"]:pressed {
 
 QPushButton[variant="ghost"] {
     background: #f5f5f5;
+}
+
+/* Ghost 按钮用于次级操作（如刷新），悬浮/按下时给出可感知反馈。 */
+QPushButton[variant="ghost"]:hover {
+    background: #e8e8e8;
+    border: 1px solid #cfcfcf;
+}
+
+QPushButton[variant="ghost"]:pressed {
+    background: #dddddd;
+    border: 1px solid #bdbdbd;
 }
 
 QHeaderView::section {

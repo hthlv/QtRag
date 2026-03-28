@@ -8,6 +8,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QSizePolicy>
 #include <QVBoxLayout>
 #ifdef QTRAG_CLIENT_HAS_WEBENGINE
 #include <QWebEnginePage>
@@ -24,7 +25,8 @@
 ReferencePanel::ReferencePanel(QWidget *parent)
     : QWidget(parent) {
     setObjectName("ReferencePanel");
-    setMinimumWidth(280);
+    setMinimumWidth(0);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -242,13 +244,16 @@ QString ReferencePanel::buildReferencePageHtml() const {
       font-size: 12px;
       color: var(--muted);
       margin-bottom: 6px;
+      flex-wrap: wrap;
     }
     .ref-file {
       color: #3d3d3d;
       font-weight: 700;
       overflow: hidden;
       text-overflow: ellipsis;
-      white-space: nowrap;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
     .ref-score { flex: 0 0 auto; }
     .ref-content p { margin: 0 0 8px 0; }
@@ -288,6 +293,12 @@ QString ReferencePanel::buildReferencePageHtml() const {
     .ref-content a {
       color: #1b7f4f;
       text-decoration: none;
+    }
+    .ref-content,
+    .ref-content * {
+      min-width: 0;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
   </style>
 </head>

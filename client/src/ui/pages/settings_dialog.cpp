@@ -3,11 +3,11 @@
 //
 
 #include "settings_dialog.h"
+#include "ui/notifier.h"
 #include "storage/repositories/settings_repository.h"
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLineEdit>
-#include <QMessageBox>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QVBoxLayout>
@@ -81,23 +81,24 @@ void SettingsDialog::loadFromLocal() {
 
 void SettingsDialog::saveToLocal() {
     if (!settingsRepo_) {
-        QMessageBox::warning(this, "错误", "设置仓库未初始化");
+        UiNotifier::warning(this, "错误", "设置仓库未初始化", true);
         return;
     }
     const QString serverUrl = serverUrlEdit_->text().trimmed();
     if (serverUrl.isEmpty()) {
-        QMessageBox::warning(this, "错误", "服务端地址不能为空");
+        UiNotifier::warning(this, "提示", "服务端地址不能为空");
         return;
     }
     if (!settingsRepo_->setValue("server_url", serverUrl)) {
-        QMessageBox::warning(this, "错误", "保存设置失败");
+        UiNotifier::warning(this, "错误", "保存设置失败", true);
         return;
     }
 
     // Top-K 单独持久化，供主窗口请求服务端时复用。
     if (!settingsRepo_->setValue("top_k", QString::number(topkkSpinBox_->value()))) {
-        QMessageBox::warning(this, "错误", "保存 Top-K 失败");
+        UiNotifier::warning(this, "错误", "保存 Top-K 失败", true);
         return;
     }
+    UiNotifier::info(this, "设置已保存");
     accept();
 }

@@ -7,6 +7,7 @@
 #include "pages/document_page.h"
 #include "pages/settings_dialog.h"
 #include "pages/reference_panel.h"
+#include "notifier.h"
 #include "models/session_record.h"
 #include "models/message_record.h"
 #include "storage/repositories/session_repository.h"
@@ -24,6 +25,8 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QMessageBox>
+#include <QResizeEvent>
+#include <QSizePolicy>
 #include <QStatusBar>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -78,13 +81,15 @@ void MainWindow::setupUi() {
     // 主界面整体边距收紧，避免菜单栏下方和三栏区域之间留出过大空白。
     rootLayout->setContentsMargins(12, 6, 12, 10);
     rootLayout->setSpacing(8);
-    auto *splitter = new QSplitter(this);
+    mainSplitter_ = new QSplitter(this);
     // 分栏拖拽条适当变窄，减少 panel 之间的视觉缝隙。
-    splitter->setHandleWidth(6);
+    mainSplitter_->setHandleWidth(6);
 
     // 左侧面板用于展示知识库和会话列表。
     auto *leftPanel = new QWidget(this);
     leftPanel->setObjectName("LeftPanel");
+    leftPanel->setMinimumWidth(0);
+    leftPanel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     auto *leftLayout = new QVBoxLayout(leftPanel);
     leftLayout->setContentsMargins(14, 14, 14, 14);
     leftLayout->setSpacing(8);
@@ -109,6 +114,8 @@ void MainWindow::setupUi() {
     // 中间区域展示聊天记录，并提供输入框和发送按钮。
     auto *centerPanel = new QWidget(this);
     centerPanel->setObjectName("CenterPanel");
+    centerPanel->setMinimumWidth(0);
+    centerPanel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     auto *centerLayout = new QVBoxLayout(centerPanel);
     centerLayout->setContentsMargins(16, 14, 16, 16);
     centerLayout->setSpacing(10);
@@ -207,33 +214,33 @@ a { color: #1b7f4f; text-decoration: none; }
     // 右侧区域预留给检索命中的引用片段。
     auto *rightPanel = new QWidget(this);
     rightPanel->setObjectName("RightPanel");
-    // 给引用栏一个更稳定的初始宽度，避免启动时占位过窄。
-    rightPanel->setMinimumWidth(260);
+    rightPanel->setMinimumWidth(0);
+    rightPanel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     auto *rightLayout = new QVBoxLayout(rightPanel);
     rightLayout->setContentsMargins(14, 14, 14, 14);
     rightLayout->setSpacing(8);
     referenceList_ = new ReferencePanel(this);
-    referenceList_->setMinimumWidth(260);
+    referenceList_->setMinimumWidth(0);
+    referenceList_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     rightLayout->addWidget(referenceList_);
 
     // 三栏布局
-    splitter->addWidget(leftPanel);
-    splitter->addWidget(centerPanel);
-    splitter->addWidget(rightPanel);
-    splitter->setStretchFactor(0, 1);
-    splitter->setStretchFactor(1, 3);
-    splitter->setStretchFactor(2, 1);
-    splitter->setChildrenCollapsible(false);
-    // 初始分栏比例向聊天区倾斜，但保证右侧引用栏有可读宽度。
-    splitter->setSizes({200, 780, 260});
-    rootLayout->addWidget(splitter);
+    mainSplitter_->addWidget(leftPanel);
+    mainSplitter_->addWidget(centerPanel);
+    mainSplitter_->addWidget(rightPanel);
+    mainSplitter_->setStretchFactor(0, 1);
+    mainSplitter_->setStretchFactor(1, 5);
+    mainSplitter_->setStretchFactor(2, 1);
+    mainSplitter_->setChildrenCollapsible(false);
+    rootLayout->addWidget(mainSplitter_);
+    updateResponsivePanels();
     inputEdit_->setFocus();
 
     // 点击发送
     connect(sendButton_, &QPushButton::clicked, this, [this]() {
         auto text = inputEdit_->toPlainText().trimmed();
         if (text.isEmpty()) {
-            QMessageBox::information(this, "提示", "请输入问题");
+            UiNotifier::info(this, "请输入问题");
             return;
         }
         // 如果当前还没有会话，就先创建一个
@@ -246,7 +253,7 @@ a { color: #1b7f4f; text-decoration: none; }
         appendChatMessageToView("user", text);
         // 把用户消息保存到本地数据库
         if (!saveMessageToLocal("user", text)) {
-            statusBar()->showMessage("用户消息保存失败");
+            UiNotifier::warning(this, "提示", "用户消息保存失败");
         }
         inputEdit_->clear();
         // 重置当前 AI 流式缓存
@@ -256,6 +263,44 @@ a { color: #1b7f4f; text-decoration: none; }
         // 发送 SSE 流式请求
         sendChatStreamRequest(text);
     });
+}
+
+void MainWindow::resizeEvent(QResizeEvent *event) {
+    QMainWindow::resizeEvent(event);
+    updateResponsivePanels();
+}
+
+void MainWindow::updateResponsivePanels() {
+    if (!mainSplitter_) {
+        return;
+    }
+
+    const int totalWidth = mainSplitter_->width();
+    if (totalWidth <= 0) {
+        return;
+    }
+
+    int leftWidth = std::clamp(totalWidth * 18 / 100, 120, 220);
+    int rightWidth = std::clamp(totalWidth * 24 / 100, 140, 320);
+    int centerWidth = totalWidth - leftWidth - rightWidth;
+
+    if (centerWidth < 320) {
+        int deficit = 320 - centerWidth;
+        const int rightShrink = std::min(deficit, std::max(0, rightWidth - 120));
+        rightWidth -= rightShrink;
+        deficit -= rightShrink;
+
+        const int leftShrink = std::min(deficit, std::max(0, leftWidth - 100));
+        leftWidth -= leftShrink;
+        deficit -= leftShrink;
+
+        centerWidth = totalWidth - leftWidth - rightWidth;
+        if (deficit > 0) {
+            centerWidth = std::max(0, centerWidth - deficit);
+        }
+    }
+
+    mainSplitter_->setSizes({leftWidth, centerWidth, rightWidth});
 }
 
 void MainWindow::setupMenu() {
@@ -276,7 +321,7 @@ void MainWindow::setupMenu() {
         if (dialog.exec() == QDialog::Accepted) {
             // 保存成功后重新加载配置
             loadSettingsFromLocal();
-            statusBar()->showMessage("设置已更新");
+            UiNotifier::info(this, "设置已更新");
         }
     });
     connect(actionNewSession, &QAction::triggered, this, [this]() {
@@ -319,7 +364,7 @@ bool MainWindow::deleteSession(const QString &sessionId) {
     }
 
     if (!sessionController_->deleteSession(sessionId)) {
-        QMessageBox::warning(this, "错误", "删除会话失败");
+        UiNotifier::warning(this, "错误", "删除会话失败", true);
         return false;
     }
 
@@ -338,20 +383,20 @@ bool MainWindow::deleteSession(const QString &sessionId) {
             leftList_->setCurrentItem(item);
             switchToSession(item->data(Qt::UserRole).toString());
         } else {
-            statusBar()->showMessage("会话已删除");
+            UiNotifier::info(this, "会话已删除");
         }
         return true;
     }
 
     restoreSessionSelection(currentSessionId_);
-    statusBar()->showMessage("会话已删除");
+    UiNotifier::info(this, "会话已删除");
     return true;
 }
 
 void MainWindow::deleteSelectedSession() {
     const QString sessionId = selectedSessionId();
     if (sessionId.isEmpty()) {
-        QMessageBox::information(this, "提示", "请先选择一个会话");
+        UiNotifier::info(this, "请先选择一个会话");
         return;
     }
 
@@ -370,7 +415,7 @@ void MainWindow::deleteSelectedSession() {
 
 void MainWindow::sendChatRequest(const QString &query) {
     if (!networkManager_) {
-        QMessageBox::critical(this, "聊天失败", "网络模块未初始化");
+        UiNotifier::error(this, "聊天失败", "网络模块未初始化", true);
         return;
     }
     // 构造请求 URL
@@ -382,15 +427,14 @@ void MainWindow::sendChatRequest(const QString &query) {
     request.setRawHeader("X-Top-K", QByteArray::number(topK_));
     // 发送中禁止按钮，防止重复点击
     sendButton_->setEnabled(false);
-    statusBar()->showMessage("正在请求服务端...");
+    UiNotifier::info(this, "正在请求服务端...");
     QNetworkReply *reply = networkManager_->post(request, query.toUtf8());
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         reply->deleteLater();
         sendButton_->setEnabled(true);
         // 网络错误处理
         if (reply->error() != QNetworkReply::NoError) {
-            statusBar()->showMessage("请求失败");
-            QMessageBox::warning(this, "聊天失败", reply->errorString());
+            UiNotifier::warning(this, "聊天失败", reply->errorString(), true);
             return;
         }
         const QByteArray data = reply->readAll();
@@ -398,8 +442,7 @@ void MainWindow::sendChatRequest(const QString &query) {
         QJsonParseError parseError;
         QJsonDocument doc = QJsonDocument::fromJson(data, &parseError);
         if (parseError.error != QJsonParseError::NoError) {
-            statusBar()->showMessage("响应解析失败");
-            QMessageBox::warning(this, "聊天失败", parseError.errorString());
+            UiNotifier::warning(this, "聊天失败", parseError.errorString(), true);
             return;
         }
         QJsonObject root = doc.object();
@@ -411,11 +454,11 @@ void MainWindow::sendChatRequest(const QString &query) {
         // 显示 AI 回答
         appendChatMessageToView("assistant", answer);
         if (!saveMessageToLocal("assistant", answer)) {
-            statusBar()->showMessage("AI 消息保存失败");
+            UiNotifier::warning(this, "提示", "AI 消息保存失败");
         }
         // 渲染右侧引用区
         renderReferences(data);
-        statusBar()->showMessage("回答完成");
+        UiNotifier::info(this, "回答完成");
     });
 }
 
@@ -438,7 +481,7 @@ void MainWindow::renderReferences(const QByteArray &jsonData) {
 void MainWindow::sendChatStreamRequest(const QString &query) {
     // 如果上一次请求还没结束，先拒绝重复发送
     if (currentReply_ != nullptr) {
-        QMessageBox::information(this, "提示", "当前还有请求正在处理");
+        UiNotifier::info(this, "当前还有请求正在处理");
         return;
     }
     // 清空本轮流式状态
@@ -451,7 +494,7 @@ void MainWindow::sendChatStreamRequest(const QString &query) {
     request.setHeader(QNetworkRequest::ContentTypeHeader, "text/plain; charset=utf-8");
     request.setRawHeader("X-Top-K", QByteArray::number(topK_));
     sendButton_->setEnabled(false);
-    statusBar()->showMessage("正在流式请求服务端");
+    UiNotifier::info(this, "正在流式请求服务端");
     currentReply_ = networkManager_->post(request, query.toUtf8());
     // readyRead: 每来一条数据就读出来
     connect(currentReply_, &QNetworkReply::readyRead, this, [this]() {
@@ -485,10 +528,9 @@ void MainWindow::sendChatStreamRequest(const QString &query) {
             if (!errorBody.isEmpty()) {
                 detail += "\n\n服务端返回：\n" + QString::fromUtf8(errorBody);
             }
-            QMessageBox::warning(this, "流式请求失败", detail);
-            statusBar()->showMessage("流式请求失败");
+            UiNotifier::warning(this, "流式请求失败", detail, true);
         } else {
-            statusBar()->showMessage("流式请求结束");
+            UiNotifier::info(this, "流式请求结束");
         }
         currentReply_->deleteLater();
         currentReply_ = nullptr;
@@ -552,13 +594,13 @@ void MainWindow::processSseEventBlock(const QString &block) {
         //把本轮 AI 最终回答保存在本地数据库
         if (!currentAiMessageBuffer_.isEmpty()) {
             if (!saveMessageToLocal("assistant", currentAiMessageBuffer_)) {
-                statusBar()->showMessage("AI 消息保存失败");
+                UiNotifier::warning(this, "提示", "AI 消息保存失败");
             }
             currentAiMessageBuffer_.clear();
         }
         // 重置标记，便于下一轮流式输出
         aiMessageStarted_ = false;
-        statusBar()->showMessage("回答完成");
+        UiNotifier::info(this, "回答完成");
         return;
     }
     // error 事件：服务端逻辑错误
@@ -569,8 +611,7 @@ void MainWindow::processSseEventBlock(const QString &block) {
         if (parseError.error == QJsonParseError::NoError && doc.isObject()) {
             message = doc.object().value("message").toString(message);
         }
-        QMessageBox::warning(this, "服务端错误", message);
-        statusBar()->showMessage("服务端返回错误");
+        UiNotifier::warning(this, "服务端错误", message, true);
         return;
     }
 }
@@ -648,7 +689,7 @@ bool MainWindow::createNewSession() {
     }
     const QString sessionId = sessionController_->createSession();
     if (sessionId.isEmpty()) {
-        QMessageBox::warning(this, "错误", "创建会话失败");
+        UiNotifier::warning(this, "错误", "创建会话失败", true);
         return false;
     }
     loadSessionsFromLocal();
@@ -671,7 +712,7 @@ void MainWindow::switchToSession(const QString &sessionId) {
     aiMessageStarted_ = false;
     referenceList_->clearReferences();
     loadMessageForSession(sessionId);
-    statusBar()->showMessage("已切换会话");
+    UiNotifier::info(this, "已切换会话");
 }
 
 void MainWindow::loadMessageForSession(const QString &sessionId) {
@@ -793,6 +834,7 @@ QString MainWindow::buildChatPageHtml() const {
       align-items: flex-end;
       margin: 4px 0;
       gap: 4px;
+      min-width: 0;
     }
     .chat-row.user { justify-content: flex-end; }
     .chat-row.assistant { justify-content: flex-start; }
@@ -822,12 +864,15 @@ QString MainWindow::buildChatPageHtml() const {
     .tail.assistant { border-right: 7px solid var(--wx-ai); }
     .bubble {
       display: inline-block;
-      max-width: min(78vw, 460px);
+      width: fit-content;
+      max-width: calc(100% - 48px);
       border-radius: 8px;
       border: 1px solid var(--wx-border);
       padding: 8px 10px;
       color: var(--wx-text);
       box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+      min-width: 0;
+      overflow: hidden;
     }
     .bubble.user { background: var(--wx-user); border-color: #7fd257; }
     .bubble.assistant { background: var(--wx-ai); border-color: var(--wx-border); }
@@ -878,6 +923,12 @@ QString MainWindow::buildChatPageHtml() const {
     .msg-content a {
       color: #1b7f4f;
       text-decoration: none;
+    }
+    .msg-content,
+    .msg-content * {
+      min-width: 0;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
   </style>
 </head>
@@ -976,9 +1027,9 @@ QString MainWindow::buildChatBubbleHtml(const QString &role, const QString &cont
     const QString avatarFg = isUser ? "#ffffff" : "#4f4f4f";
     const QString avatarText = isUser ? "我" : "AI";
     const QString bubblePart = QString::fromUtf8(R"(
-<div style="display:inline-block; max-width:420px; border:1px solid %1; background:%2; color:%3; border-radius:8px; padding:8px 10px;">
+<div style="display:inline-block; width:auto; max-width:calc(100% - 48px); border:1px solid %1; background:%2; color:%3; border-radius:8px; padding:8px 10px;">
   <div style="font-size:10px; margin-bottom:4px; color:%4;">%5</div>
-  <div style="font-size:13px; line-height:1.45;">%6</div>
+  <div style="font-size:13px; line-height:1.45; overflow-wrap:anywhere; word-break:break-word;">%6</div>
 </div>
 )")
             .arg(bubbleBorder, bubbleBg, bubbleFg, senderColor, sender, contentHtml);
@@ -997,14 +1048,14 @@ QString MainWindow::buildChatBubbleHtml(const QString &role, const QString &cont
     if (isUser) {
         return QString::fromUtf8(R"(
 <div style="width:100%; margin:4px 0; text-align:right;">
-  <span style="display:inline-block;">%1%2%3</span>
+  <span style="display:inline-block; max-width:100%;">%1%2%3</span>
 </div>
 )")
                 .arg(bubblePart, tailPart, avatarPart);
     }
     return QString::fromUtf8(R"(
 <div style="width:100%; margin:4px 0; text-align:left;">
-  <span style="display:inline-block;">%1%2%3</span>
+  <span style="display:inline-block; max-width:100%;">%1%2%3</span>
 </div>
 )")
             .arg(avatarPart, tailPart, bubblePart);

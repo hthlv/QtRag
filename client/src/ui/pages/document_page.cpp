@@ -3,6 +3,7 @@
 //
 
 #include "document_page.h"
+#include "ui/notifier.h"
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -12,7 +13,6 @@
 #include <QTableWidget>
 #include <QHeaderView>
 #include <QFileDialog>
-#include <QMessageBox>
 #include <QJsonParseError>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -165,7 +165,7 @@ void DocumentPage::setupUi() {
 void DocumentPage::uploadFile(const QString &filePath) {
     QFile file(filePath);
     if (!file.open(QIODevice::ReadOnly)) {
-        QMessageBox::warning(this, "上传失败", "无法打开文件");
+        UiNotifier::warning(this, "上传失败", "无法打开文件", true);
         return;
     }
     const QByteArray rawData = file.readAll();
@@ -173,7 +173,7 @@ void DocumentPage::uploadFile(const QString &filePath) {
     QByteArray fileData;
     QString decodeError;
     if (!decode_text_file_to_utf8(rawData, &fileData, &decodeError)) {
-        QMessageBox::warning(this, "上传失败", decodeError);
+        UiNotifier::warning(this, "上传失败", decodeError, true);
         return;
     }
     QFileInfo fileInfo(filePath);
@@ -191,35 +191,42 @@ void DocumentPage::uploadFile(const QString &filePath) {
         const QByteArray responseData = reply->readAll();
         reply->deleteLater();
         if (reply->error() != QNetworkReply::NoError) {
-            QMessageBox::warning(
+            UiNotifier::warning(
                 this,
                 "上传失败",
-                extract_error_message(responseData, reply->errorString()));
+                extract_error_message(responseData, reply->errorString()),
+                true);
             return;
         }
         // 简单检查服务端返回
         QJsonParseError parseError;
         QJsonDocument doc = QJsonDocument::fromJson(responseData, &parseError);
         if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
-            QMessageBox::warning(this, "上传失败", "服务端返回格式不正确");
+            UiNotifier::warning(this, "上传失败", "服务端返回格式不正确", true);
             return;
         }
-        QMessageBox::information(this, "上传成功", "文档已上传");
+        UiNotifier::info(this, "文档已上传");
         refreshDocuments();
     });
 }
 
 void DocumentPage::refreshDocuments() {
+    UiNotifier::info(this, "正在刷新文档列表...", 2000);
     QUrl url(serverBaseUrl_ + "/api/v1/docs");
     QNetworkRequest request(url);
     QNetworkReply *reply = networkManager_->get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        const QByteArray responseData = reply->readAll();
         reply->deleteLater();
         if (reply->error() != QNetworkReply::NoError) {
-            QMessageBox::warning(this, "刷新失败", reply->errorString());
+            UiNotifier::warning(
+                this,
+                "刷新失败",
+                extract_error_message(responseData, reply->errorString()));
             return;
         }
-        renderDocumentsFromJson(reply->readAll());
+        renderDocumentsFromJson(responseData);
+        UiNotifier::info(this, "文档列表已刷新");
     });
 }
 
@@ -227,7 +234,7 @@ void DocumentPage::renderDocumentsFromJson(const QByteArray &jsonData) {
     QJsonParseError parseError;
     QJsonDocument doc = QJsonDocument::fromJson(jsonData, &parseError);
     if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
-        QMessageBox::warning(this, "解析失败", "文档列表 JSON 解析失败");
+        UiNotifier::warning(this, "解析失败", "文档列表 JSON 解析失败", true);
         return;
     }
     QJsonObject rootObj = doc.object();

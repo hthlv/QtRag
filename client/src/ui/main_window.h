@@ -8,6 +8,8 @@
 #include <QMainWindow>
 #include <QSqlDatabase>
 class QListWidget;
+class QResizeEvent;
+class QSplitter;
 class QTextEdit;
 #ifdef QTRAG_CLIENT_HAS_WEBENGINE
 class QWebEngineView;
@@ -107,6 +109,11 @@ private:
 
     void renderChatMessages();
 
+    void updateResponsivePanels();
+
+protected:
+    void resizeEvent(QResizeEvent *event) override;
+
 #ifdef QTRAG_CLIENT_HAS_WEBENGINE
     QString buildChatPageHtml() const;
 #else
@@ -128,6 +135,8 @@ private:
     QTextEdit *inputEdit_{nullptr};
     // 触发发送动作的按钮。
     QPushButton *sendButton_{nullptr};
+    // 主界面三栏分割器，窗口缩放时按比例重算左右面板宽度。
+    QSplitter *mainSplitter_{nullptr};
     // 右侧引用片段展示区。
     ReferencePanel *referenceList_{nullptr};
     // 当前仅保留连接状态字段，后续接入服务端时可以直接复用。
