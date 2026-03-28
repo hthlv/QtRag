@@ -158,6 +158,8 @@ AppConfig AppConfig::load_from_file(const std::string &path) {
     // 最后读 OpenAI 私有配置。
     cfg.openai.api_key_env = read_string_with_legacy_fallback(
         openai_json, "api_key_env", j, "openai_api_key_env", cfg.openai.api_key_env);
+    cfg.openai.chat_api = read_string_with_legacy_fallback(
+        openai_json, "chat_api", j, "openai_chat_api", cfg.openai.chat_api);
     cfg.openai.organization = read_string_with_legacy_fallback(
         openai_json, "organization", j, "openai_organization", cfg.openai.organization);
     cfg.openai.project = read_string_with_legacy_fallback(

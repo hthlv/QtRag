@@ -21,8 +21,18 @@ namespace {
         return lowered;
     }
 
+    // 这里不做复杂正则，只兜底识别最常见的“把真实 Key 写进 api_key_env”误配。
+    bool looks_like_api_key_value(const std::string &text) {
+        const std::string lowered = to_lower_copy(text);
+        return lowered.rfind("sk-", 0) == 0 || lowered.rfind("sess-", 0) == 0;
+    }
+
     // OpenAI 的 API Key 只允许从环境变量读取，避免写进配置文件。
     std::string read_required_env(const std::string &env_name) {
+        if (looks_like_api_key_value(env_name)) {
+            throw std::runtime_error(
+                "openai.api_key_env should be an environment variable name such as OPENAI_API_KEY, not the API key value itself");
+        }
         const char *value = std::getenv(env_name.c_str());
         if (value == nullptr || std::string(value).empty()) {
             throw std::runtime_error("missing required environment variable: " + env_name);
@@ -90,6 +100,7 @@ std::unique_ptr<LLMClient> create_llm_client(const AppConfig &config) {
             read_required_env(config.openai.api_key_env),
             config.models.chat,
             config.provider.timeout_ms,
+            config.openai.chat_api,
             config.openai.store,
             config.openai.reasoning_effort,
             config.openai.organization,

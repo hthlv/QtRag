@@ -37,6 +37,8 @@ struct ModelConfig {
 struct OpenAIConfig {
     // API Key 只从环境变量读取，不落盘。
     std::string api_key_env = "OPENAI_API_KEY";
+    // 聊天接口风格：responses / chat_completions。
+    std::string chat_api = "responses";
     // 可选组织头。
     std::string organization;
     // 可选项目头。

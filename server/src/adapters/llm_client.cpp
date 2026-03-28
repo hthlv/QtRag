@@ -4,9 +4,20 @@
 
 #include "llm_client.h"
 #include <nlohmann/json.hpp>
+#include <algorithm>
+#include <cctype>
 #include <stdexcept>
 
 namespace {
+    // 不同配置来源可能大小写不一致，统一转小写后再判断协议风格。
+    std::string to_lower_copy(const std::string &text) {
+        std::string lowered = text;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        return lowered;
+    }
+
     // OpenAI Responses API 返回的是 output 数组，需要把 message/output_text 全部拼出来。
     std::string extract_openai_output_text(const nlohmann::json &json_body) {
         if (!json_body.contains("output") || !json_body["output"].is_array()) {
@@ -43,6 +54,33 @@ namespace {
         return result;
     }
 
+    // 把 content 兼容成纯文本：既支持普通字符串，也兼容部分数组化内容块格式。
+    std::string extract_content_text(const nlohmann::json &content) {
+        if (content.is_string()) {
+            return content.get<std::string>();
+        }
+        if (!content.is_array()) {
+            return {};
+        }
+
+        std::string result;
+        for (const auto &item : content) {
+            if (item.is_string()) {
+                result += item.get<std::string>();
+                continue;
+            }
+            if (!item.is_object()) {
+                continue;
+            }
+            if (item.contains("text") && item["text"].is_string()) {
+                result += item["text"].get<std::string>();
+            } else if (item.contains("content") && item["content"].is_string()) {
+                result += item["content"].get<std::string>();
+            }
+        }
+        return result;
+    }
+
     // 把 OpenAI 的公共请求体抽出来，避免普通/流式两套逻辑各拼一遍。
     nlohmann::json build_openai_request_json(const std::string &model,
                                              const std::string &prompt,
@@ -59,6 +97,22 @@ namespace {
                 {"effort", reasoning_effort}
             };
         }
+        return req_json;
+    }
+
+    // OpenAI Compatible 的 chat/completions 仍然采用 messages 结构。
+    nlohmann::json build_chat_completions_request_json(const std::string &model,
+                                                       const std::string &prompt,
+                                                       bool stream) {
+        nlohmann::json req_json;
+        req_json["model"] = model;
+        req_json["stream"] = stream;
+        req_json["messages"] = nlohmann::json::array({
+            {
+                {"role", "user"},
+                {"content", prompt}
+            }
+        });
         return req_json;
     }
 
@@ -93,6 +147,56 @@ namespace {
             return json_body["response"].get<std::string>();
         }
         return {};
+    }
+
+    // chat/completions 非流式返回一般在 choices[0].message.content。
+    std::string extract_chat_completions_output_text(const nlohmann::json &json_body) {
+        if (!json_body.contains("choices") || !json_body["choices"].is_array() || json_body["choices"].empty()) {
+            throw std::runtime_error("llm response format is invalid");
+        }
+
+        const auto &first_choice = json_body["choices"][0];
+        if (!first_choice.is_object() ||
+            !first_choice.contains("message") ||
+            !first_choice["message"].is_object() ||
+            !first_choice["message"].contains("content")) {
+            throw std::runtime_error("llm response format is invalid");
+        }
+
+        const std::string result = extract_content_text(first_choice["message"]["content"]);
+        if (result.empty()) {
+            throw std::runtime_error("llm response format is invalid");
+        }
+        return result;
+    }
+
+    // chat/completions 流式增量一般在 choices[0].delta.content。
+    std::string extract_chat_completions_delta_text(const nlohmann::json &json_body) {
+        if (!json_body.contains("choices") || !json_body["choices"].is_array()) {
+            return {};
+        }
+
+        std::string result;
+        for (const auto &choice : json_body["choices"]) {
+            if (!choice.is_object() || !choice.contains("delta") || !choice["delta"].is_object()) {
+                continue;
+            }
+            const auto &delta = choice["delta"];
+            if (!delta.contains("content")) {
+                continue;
+            }
+            result += extract_content_text(delta["content"]);
+        }
+        return result;
+    }
+
+    // 协议名做宽松兼容，减少配置输入时的拼写摩擦。
+    bool is_chat_completions_api(const std::string &chat_api) {
+        const std::string normalized = to_lower_copy(chat_api);
+        return normalized == "chat_completions" ||
+               normalized == "chat-completions" ||
+               normalized == "chat/completions" ||
+               normalized == "chat.completions";
     }
 }
 
@@ -190,6 +294,7 @@ OpenAILLMClient::OpenAILLMClient(const std::string &base_url,
                                  const std::string &api_key,
                                  const std::string &model,
                                  int timeout_ms,
+                                 const std::string &chat_api,
                                  bool store,
                                  const std::string &reasoning_effort,
                                  const std::string &organization,
@@ -204,6 +309,7 @@ OpenAILLMClient::OpenAILLMClient(const std::string &base_url,
             {"OpenAI-Project", project},
         }),
       model_(model),
+      chat_api_(chat_api),
       store_(store),
       reasoning_effort_(reasoning_effort) {
 }
@@ -214,22 +320,29 @@ std::string OpenAILLMClient::generate(const std::string &query,
     // OpenAI 版本同样直接消费最终 prompt。
     (void)query;
     (void)contexts;
-    const nlohmann::json req_json = build_openai_request_json(
-        model_,
-        prompt,
-        store_,
-        reasoning_effort_,
-        false);
 
     try {
-        const HttpResponse response = transport_.post_json("/v1/responses", req_json);
+        const bool use_chat_completions = is_chat_completions_api(chat_api_);
+        const nlohmann::json req_json = use_chat_completions
+                                            ? build_chat_completions_request_json(model_, prompt, false)
+                                            : build_openai_request_json(
+                                                  model_,
+                                                  prompt,
+                                                  store_,
+                                                  reasoning_effort_,
+                                                  false);
+        const std::string target = use_chat_completions ? "/v1/chat/completions" : "/v1/responses";
+        const HttpResponse response = transport_.post_json(target, req_json);
         if (response.status_code != 200) {
             throw std::runtime_error("llm request failed, status=" +
                                      std::to_string(response.status_code) +
                                      ", body=" + response.body);
         }
-        // Responses API 需要从 output/message/content 中提取最终文本。
-        return extract_openai_output_text(nlohmann::json::parse(response.body));
+        // Responses 与 Chat Completions 的返回体结构不同，这里按当前协议分别解析。
+        const nlohmann::json json_body = nlohmann::json::parse(response.body);
+        return use_chat_completions
+                   ? extract_chat_completions_output_text(json_body)
+                   : extract_openai_output_text(json_body);
     } catch (const std::runtime_error &ex) {
         const std::string message = ex.what();
         if (message.find("llm request failed") != std::string::npos ||
@@ -247,16 +360,20 @@ void OpenAILLMClient::stream_generate(const std::string &query,
     // OpenAI 流式模式直接消费上游 SSE，而不是本地伪造 token。
     (void)query;
     (void)contexts;
-    const nlohmann::json req_json = build_openai_request_json(
-        model_,
-        prompt,
-        store_,
-        reasoning_effort_,
-        true);
 
     try {
+        const bool use_chat_completions = is_chat_completions_api(chat_api_);
+        const nlohmann::json req_json = use_chat_completions
+                                            ? build_chat_completions_request_json(model_, prompt, true)
+                                            : build_openai_request_json(
+                                                  model_,
+                                                  prompt,
+                                                  store_,
+                                                  reasoning_effort_,
+                                                  true);
+        const std::string target = use_chat_completions ? "/v1/chat/completions" : "/v1/responses";
         const HttpResponse response = transport_.post_json_sse(
-            "/v1/responses",
+            target,
             req_json,
             [&](const std::string &event_name, const std::string &data) {
                 // [DONE] 或空数据都不再向上转发。
@@ -270,6 +387,18 @@ void OpenAILLMClient::stream_generate(const std::string &query,
                     event_json = nlohmann::json::parse(data);
                 } catch (const nlohmann::json::exception &) {
                     throw std::runtime_error("llm response format is invalid");
+                }
+
+                if (use_chat_completions) {
+                    // OpenAI Compatible 流式事件通常没有独立 event 名，直接从 choices.delta 取文本。
+                    if (event_json.contains("error")) {
+                        throw std::runtime_error("llm request failed, body=" + extract_openai_error_message(event_json));
+                    }
+                    const std::string delta = extract_chat_completions_delta_text(event_json);
+                    if (!delta.empty()) {
+                        on_chunk(delta);
+                    }
+                    return;
                 }
 
                 // 某些服务端会把类型写在 event 字段里，也可能只放在 JSON.type 中。

@@ -56,13 +56,18 @@ namespace {
         return text.substr(0, max_len) + "...";
     }
 
-    // 把请求级别的 OpenAI 关键头部拼成统一的日志片段。
+    // 把请求级别的 OpenAI/SiliconFlow 关键头部拼成统一的日志片段。
     std::string build_openai_header_summary(const std::map<std::string, std::string> &headers) {
         std::ostringstream oss;
 
         const std::string request_id = get_header_value(headers, "x-request-id");
         if (!request_id.empty()) {
             oss << " request_id=" << request_id;
+        }
+
+        const std::string silicon_trace_id = get_header_value(headers, "x-siliconcloud-trace-id");
+        if (!silicon_trace_id.empty()) {
+            oss << " trace_id=" << silicon_trace_id;
         }
 
         const std::string processing_ms = get_header_value(headers, "openai-processing-ms");

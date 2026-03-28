@@ -6,20 +6,20 @@
   },
   "provider": {
     "type": "openai",
-    "base_url": "https://api.openai.com",
+    "base_url": "https://api.siliconflow.cn",
     "timeout_ms": 60000
   },
   "models": {
-    "chat": "gpt-5.4-mini",
-    "embedding": "text-embedding-3-small"
+    "chat": "Qwen/Qwen2.5-7B-Instruct",
+    "embedding": "BAAI/bge-large-zh-v1.5"
   },
   "openai": {
-    "api_key_env": "OPENAI_API_KEY",
-    "chat_api": "responses",
+    "api_key_env": "SILICONFLOW_API_KEY",
+    "chat_api": "chat_completions",
     "organization": "",
     "project": "",
     "store": false,
-    "reasoning_effort": "low",
-    "embedding_dimensions": 1536
+    "reasoning_effort": "",
+    "embedding_dimensions": 0
   }
 }

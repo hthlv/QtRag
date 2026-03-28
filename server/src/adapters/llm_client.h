@@ -52,14 +52,15 @@ private:
     std::string model_;
 };
 
-// OpenAI 文本生成实现，使用 Responses API。
+// OpenAI 文本生成实现，同时兼容 Responses API 和 Chat Completions API。
 class OpenAILLMClient final : public LLMClient {
 public:
-    // OpenAI 需要默认鉴权头、store 选项和 reasoning 参数。
+    // OpenAI 需要默认鉴权头、聊天接口风格、store 选项和 reasoning 参数。
     OpenAILLMClient(const std::string &base_url,
                     const std::string &api_key,
                     const std::string &model,
                     int timeout_ms,
+                    const std::string &chat_api,
                     bool store,
                     const std::string &reasoning_effort,
                     const std::string &organization,
@@ -80,6 +81,8 @@ private:
     // Authorization、Organization、Project 等头在 transport 构造阶段注入。
     HttpTransport transport_;
     std::string model_;
+    // 当前聊天协议风格：responses / chat_completions。
+    std::string chat_api_;
     // 是否允许 OpenAI 存储响应，默认建议关闭。
     bool store_{false};
     // reasoning effort 为可选参数，只有配置时才带上。
