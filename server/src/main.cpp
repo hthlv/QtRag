@@ -6,7 +6,7 @@
 int main() {
     try {
         // 1. 读取配置
-        AppConfig config = AppConfig::load_from_file("config/config.json");
+        AppConfig config = AppConfig::load_from_file("config/config.openai.example.json");
         // 2. 初始化 SQLite
         // 服务启动时先准备数据库，再开始监听 HTTP 端口。
         SqlliteStore store("qtrag_server.db");

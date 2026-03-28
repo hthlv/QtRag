@@ -5,20 +5,20 @@
     "worker_threads": 4
   },
   "provider": {
-    "type": "ollama",
-    "base_url": "http://127.0.0.1:11434",
-    "timeout_ms": 30000
+    "type": "openai",
+    "base_url": "https://api.openai.com",
+    "timeout_ms": 60000
   },
   "models": {
-    "chat": "qwen2.5:7b",
-    "embedding": "nomic-embed-text:latest"
+    "chat": "gpt-5.4-mini",
+    "embedding": "text-embedding-3-small"
   },
   "openai": {
     "api_key_env": "OPENAI_API_KEY",
     "organization": "",
     "project": "",
     "store": false,
-    "reasoning_effort": "",
-    "embedding_dimensions": 0
+    "reasoning_effort": "low",
+    "embedding_dimensions": 1536
   }
 }

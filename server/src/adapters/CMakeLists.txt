@@ -1,7 +1,11 @@
 target_sources(${QTRAG_SERVER_TARGET}
     PRIVATE
+        http_transport.cpp
+        http_transport.h
         embedding_client.cpp
         embedding_client.h
         llm_client.cpp
         llm_client.h
+        provider_factory.cpp
+        provider_factory.h
 )

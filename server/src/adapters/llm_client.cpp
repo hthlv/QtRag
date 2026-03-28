@@ -3,147 +3,307 @@
 //
 
 #include "llm_client.h"
-#include <boost/asio.hpp>
-#include <boost/beast/core.hpp>
-#include <boost/beast/http.hpp>
 #include <nlohmann/json.hpp>
-#include <sstream>
-#include <algorithm>
-#include <thread>
-namespace asio = boost::asio;
-namespace beast = boost::beast;
-namespace http = beast::http;
-using tcp = asio::ip::tcp;
+#include <stdexcept>
+
 namespace {
-    // 截断文本，避免回答太长
-    std::string truncate_text(const std::string &text, std::size_t max_len) {
-        if (text.size() <= max_len) {
-            return text;
-        }
-        return text.substr(0, max_len) + "...";
-    }
-
-    // 根据 UTF-8 首字节判断当前字符总共占多少字节。
-    std::size_t utf8_char_length(unsigned char lead) {
-        if ((lead & 0x80) == 0x00) {
-            return 1;
-        }
-        if ((lead & 0xE0) == 0xC0) {
-            return 2;
-        }
-        if ((lead & 0xF0) == 0xE0) {
-            return 3;
-        }
-        if ((lead & 0xF8) == 0xF0) {
-            return 4;
-        }
-        return 1;
-    }
-
-    // 按“字符数”而不是“字节数”切分 UTF-8 文本，避免中文被截断后出现乱码。
-    std::vector<std::string> split_utf8_by_chars(const std::string &text, std::size_t max_chars) {
-        std::vector<std::string> pieces;
-        if (max_chars == 0 || text.empty()) {
-            return pieces;
+    // OpenAI Responses API 返回的是 output 数组，需要把 message/output_text 全部拼出来。
+    std::string extract_openai_output_text(const nlohmann::json &json_body) {
+        if (!json_body.contains("output") || !json_body["output"].is_array()) {
+            throw std::runtime_error("llm response format is invalid");
         }
 
-        std::size_t start = 0;
-        std::size_t char_count = 0;
-        std::size_t i = 0;
-        while (i < text.size()) {
-            const std::size_t char_len = utf8_char_length(static_cast<unsigned char>(text[i]));
-            if (char_count == max_chars) {
-                // 已累计满一个分片时，从上一个合法边界切出这一段。
-                pieces.push_back(text.substr(start, i - start));
-                start = i;
-                char_count = 0;
+        std::string result;
+        for (const auto &item : json_body["output"]) {
+            if (!item.is_object()) {
+                continue;
             }
-            i += std::min(char_len, text.size() - i);
-            ++char_count;
+            if (!item.contains("type") || item.value("type", "") != "message") {
+                continue;
+            }
+            if (!item.contains("content") || !item["content"].is_array()) {
+                continue;
+            }
+            for (const auto &content : item["content"]) {
+                if (!content.is_object()) {
+                    continue;
+                }
+                const std::string content_type = content.value("type", "");
+                if ((content_type == "output_text" || content_type == "text") &&
+                    content.contains("text") &&
+                    content["text"].is_string()) {
+                    result += content["text"].get<std::string>();
+                }
+            }
         }
 
-        if (start < text.size()) {
-            pieces.push_back(text.substr(start));
+        if (result.empty()) {
+            throw std::runtime_error("llm response format is invalid");
         }
-        return pieces;
+        return result;
+    }
+
+    // 把 OpenAI 的公共请求体抽出来，避免普通/流式两套逻辑各拼一遍。
+    nlohmann::json build_openai_request_json(const std::string &model,
+                                             const std::string &prompt,
+                                             bool store,
+                                             const std::string &reasoning_effort,
+                                             bool stream) {
+        nlohmann::json req_json;
+        req_json["model"] = model;
+        req_json["input"] = prompt;
+        req_json["store"] = store;
+        req_json["stream"] = stream;
+        if (!reasoning_effort.empty()) {
+            req_json["reasoning"] = {
+                {"effort", reasoning_effort}
+            };
+        }
+        return req_json;
+    }
+
+    // OpenAI 的错误体可能出现在 error.message，也可能直接是 message。
+    std::string extract_openai_error_message(const nlohmann::json &json_body) {
+        if (json_body.contains("error") && json_body["error"].is_object()) {
+            const auto &error = json_body["error"];
+            if (error.contains("message") && error["message"].is_string()) {
+                return error["message"].get<std::string>();
+            }
+        }
+        if (json_body.contains("message") && json_body["message"].is_string()) {
+            return json_body["message"].get<std::string>();
+        }
+        return json_body.dump();
+    }
+
+    // 流式事件里真正的增量文本一般在 delta；个别兼容场景退回读 text。
+    std::string extract_openai_delta_text(const nlohmann::json &json_body) {
+        if (json_body.contains("delta") && json_body["delta"].is_string()) {
+            return json_body["delta"].get<std::string>();
+        }
+        if (json_body.contains("text") && json_body["text"].is_string()) {
+            return json_body["text"].get<std::string>();
+        }
+        return {};
+    }
+
+    // Ollama 流式返回每行一个 JSON 对象，文本增量放在 response 字段。
+    std::string extract_ollama_delta_text(const nlohmann::json &json_body) {
+        if (json_body.contains("response") && json_body["response"].is_string()) {
+            return json_body["response"].get<std::string>();
+        }
+        return {};
     }
 }
 
-
-LLMClient::LLMClient(const std::string &host,
-                     const std::string &port,
-                     const std::string &model,
-                     int timeout_ms)
-    : host_(host),
-      port_(port),
-      model_(model),
-      timeout_ms_(timeout_ms) {
+OllamaLLMClient::OllamaLLMClient(const std::string &base_url,
+                                 const std::string &model,
+                                 int timeout_ms)
+    // 复用统一 transport，Ollama 实现只关心自己的请求/响应格式。
+    : transport_(base_url, timeout_ms),
+      model_(model) {
 }
 
-std::string LLMClient::generate(const std::string &query,
-                                const std::vector<RetrievedChunk> &contexts,
-                                const std::string &prompt) const {
+std::string OllamaLLMClient::generate(const std::string &query,
+                                      const std::vector<RetrievedChunk> &contexts,
+                                      const std::string &prompt) const {
+    // 当前 prompt 已经包含完整上下文，因此这里不再单独拼 query/contexts。
     (void)query;
     (void)contexts;
-    // 1. 构造请求 JSON
+
     nlohmann::json req_json;
     req_json["model"] = model_;
     req_json["prompt"] = prompt;
-    // 这里明确要求非流式，让服务端先拿到完整回答
     req_json["stream"] = false;
-    const std::string body = req_json.dump();
-    // 2. 建立 TCP 连接
-    asio::io_context ioc;
-    tcp::resolver resolver(ioc);
-    beast::tcp_stream stream(ioc);
-    auto const results = resolver.resolve(host_, port_);
-    stream.expires_after(std::chrono::milliseconds(timeout_ms_));
-    stream.connect(results);
-    // 3. 发送请求
-    http::request<http::string_body> req{http::verb::post, "/api/generate", 11};
-    req.set(http::field::host, host_);
-    req.set(http::field::user_agent, "QtRAG-Server");
-    req.set(http::field::content_type, "application/json");
-    req.body() = body;
-    req.prepare_payload();
-    http::write(stream, req);
-    // 4. 读取响应
-    beast::flat_buffer buffer;
-    http::response<http::string_body> res;
-    http::read(stream, buffer, res);
-    // 5. 关闭连接
-    beast::error_code ec;
-    stream.socket().shutdown(tcp::socket::shutdown_both, ec);
-    // 6. 状态码校验
-    if (res.result() != http::status::ok) {
-        throw std::runtime_error("llm request failed, status=" +
-                                 std::to_string(static_cast<unsigned>(res.result_int())) +
-                                 ", body=" + res.body());
+
+    try {
+        // Ollama 非流式仍走 /api/generate。
+        const HttpResponse response = transport_.post_json("/api/generate", req_json);
+        if (response.status_code != 200) {
+            throw std::runtime_error("llm request failed, status=" +
+                                     std::to_string(response.status_code) +
+                                     ", body=" + response.body);
+        }
+        const auto json_body = nlohmann::json::parse(response.body);
+        if (!json_body.contains("response") || !json_body["response"].is_string()) {
+            throw std::runtime_error("llm response format is invalid");
+        }
+        return json_body["response"].get<std::string>();
+    } catch (const std::runtime_error &ex) {
+        // 统一把底层 transport/JSON 异常包装成 llm request failed 前缀。
+        const std::string message = ex.what();
+        if (message.find("llm request failed") != std::string::npos ||
+            message.find("llm response format is invalid") != std::string::npos) {
+            throw;
+        }
+        throw std::runtime_error("llm request failed, cause=" + message);
     }
-    // 7. 解析 JSON
-    auto j = nlohmann::json::parse(res.body());
-    // Ollama /api/generate 非流式返回里，回答文本在 response 字段
-    if (!j.contains("response")) {
-        throw std::runtime_error("llm response format is invalid");
-    }
-    return j["response"].get<std::string>();
 }
 
-void LLMClient::stream_generate(const std::string &query,
-                                const std::vector<RetrievedChunk> &contexts,
-                                const std::string &prompt,
-                                const std::function<void(const std::string &)> &on_chunk) const {
-    // 1. 先生成完整回答
-    // 2. 再按字符数分段，避免把 UTF-8 中文切坏
-    const std::string full_answer = generate(query, contexts, prompt);
-    const std::size_t piece_size = 20;
-    // 这里先预切片，后续逐段回调给 SSE 层发送。
-    const auto pieces = split_utf8_by_chars(full_answer, piece_size);
-    for (const auto &piece: pieces) {
-        // 通过回调把当前片段交给上层
-        on_chunk(piece);
-        // 人工 sleep 一下，模拟流式输出效果
-        // 注意：当前服务器还是单线程同步版，这会阻塞其它请求
-        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+void OllamaLLMClient::stream_generate(const std::string &query,
+                                      const std::vector<RetrievedChunk> &contexts,
+                                      const std::string &prompt,
+                                      const std::function<void(const std::string &)> &on_chunk) const {
+    // Ollama 流式同样直接消费最终 prompt。
+    (void)query;
+    (void)contexts;
+
+    nlohmann::json req_json;
+    req_json["model"] = model_;
+    req_json["prompt"] = prompt;
+    req_json["stream"] = true;
+
+    try {
+        const HttpResponse response = transport_.post_json_lines(
+            "/api/generate",
+            req_json,
+            [&](const std::string &line) {
+                nlohmann::json event_json;
+                try {
+                    event_json = nlohmann::json::parse(line);
+                } catch (const nlohmann::json::exception &) {
+                    throw std::runtime_error("llm response format is invalid");
+                }
+
+                const std::string delta = extract_ollama_delta_text(event_json);
+                if (!delta.empty()) {
+                    on_chunk(delta);
+                }
+            });
+
+        if (response.status_code != 200) {
+            throw std::runtime_error("llm request failed, status=" +
+                                     std::to_string(response.status_code) +
+                                     ", body=" + response.body);
+        }
+    } catch (const std::runtime_error &ex) {
+        const std::string message = ex.what();
+        if (message.find("llm request failed") != std::string::npos ||
+            message.find("llm response format is invalid") != std::string::npos) {
+            throw;
+        }
+        throw std::runtime_error("llm request failed, cause=" + message);
+    }
+}
+
+OpenAILLMClient::OpenAILLMClient(const std::string &base_url,
+                                 const std::string &api_key,
+                                 const std::string &model,
+                                 int timeout_ms,
+                                 bool store,
+                                 const std::string &reasoning_effort,
+                                 const std::string &organization,
+                                 const std::string &project)
+    // OpenAI 所需鉴权与租户头信息在构造 transport 时一次性注入。
+    : transport_(
+        base_url,
+        timeout_ms,
+        {
+            {"Authorization", "Bearer " + api_key},
+            {"OpenAI-Organization", organization},
+            {"OpenAI-Project", project},
+        }),
+      model_(model),
+      store_(store),
+      reasoning_effort_(reasoning_effort) {
+}
+
+std::string OpenAILLMClient::generate(const std::string &query,
+                                      const std::vector<RetrievedChunk> &contexts,
+                                      const std::string &prompt) const {
+    // OpenAI 版本同样直接消费最终 prompt。
+    (void)query;
+    (void)contexts;
+    const nlohmann::json req_json = build_openai_request_json(
+        model_,
+        prompt,
+        store_,
+        reasoning_effort_,
+        false);
+
+    try {
+        const HttpResponse response = transport_.post_json("/v1/responses", req_json);
+        if (response.status_code != 200) {
+            throw std::runtime_error("llm request failed, status=" +
+                                     std::to_string(response.status_code) +
+                                     ", body=" + response.body);
+        }
+        // Responses API 需要从 output/message/content 中提取最终文本。
+        return extract_openai_output_text(nlohmann::json::parse(response.body));
+    } catch (const std::runtime_error &ex) {
+        const std::string message = ex.what();
+        if (message.find("llm request failed") != std::string::npos ||
+            message.find("llm response format is invalid") != std::string::npos) {
+            throw;
+        }
+        throw std::runtime_error("llm request failed, cause=" + message);
+    }
+}
+
+void OpenAILLMClient::stream_generate(const std::string &query,
+                                      const std::vector<RetrievedChunk> &contexts,
+                                      const std::string &prompt,
+                                      const std::function<void(const std::string &)> &on_chunk) const {
+    // OpenAI 流式模式直接消费上游 SSE，而不是本地伪造 token。
+    (void)query;
+    (void)contexts;
+    const nlohmann::json req_json = build_openai_request_json(
+        model_,
+        prompt,
+        store_,
+        reasoning_effort_,
+        true);
+
+    try {
+        const HttpResponse response = transport_.post_json_sse(
+            "/v1/responses",
+            req_json,
+            [&](const std::string &event_name, const std::string &data) {
+                // [DONE] 或空数据都不再向上转发。
+                if (data.empty() || data == "[DONE]") {
+                    return;
+                }
+
+                nlohmann::json event_json;
+                try {
+                    // 每条 SSE data 都应该是独立 JSON。
+                    event_json = nlohmann::json::parse(data);
+                } catch (const nlohmann::json::exception &) {
+                    throw std::runtime_error("llm response format is invalid");
+                }
+
+                // 某些服务端会把类型写在 event 字段里，也可能只放在 JSON.type 中。
+                const std::string resolved_event_name = !event_name.empty()
+                                                            ? event_name
+                                                            : event_json.value("type", "");
+
+                if (resolved_event_name == "response.output_text.delta") {
+                    // 只把真正的文本增量透传给业务层，保持现有 token 协议不变。
+                    const std::string delta = extract_openai_delta_text(event_json);
+                    if (!delta.empty()) {
+                        on_chunk(delta);
+                    }
+                    return;
+                }
+
+                if (resolved_event_name == "error") {
+                    // OpenAI 的 error 事件直接转成统一的 llm 请求异常。
+                    throw std::runtime_error("llm request failed, body=" + extract_openai_error_message(event_json));
+                }
+            });
+
+        if (response.status_code != 200) {
+            // 如果上游在响应头阶段就失败，这里仍然把完整 body 抛出去。
+            throw std::runtime_error("llm request failed, status=" +
+                                     std::to_string(response.status_code) +
+                                     ", body=" + response.body);
+        }
+    } catch (const std::runtime_error &ex) {
+        const std::string message = ex.what();
+        if (message.find("llm request failed") != std::string::npos ||
+            message.find("llm response format is invalid") != std::string::npos) {
+            throw;
+        }
+        throw std::runtime_error("llm request failed, cause=" + message);
     }
 }

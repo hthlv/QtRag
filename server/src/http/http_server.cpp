@@ -5,6 +5,7 @@
 #include "http_server.h"
 #include "adapters/embedding_client.h"
 #include "adapters/llm_client.h"
+#include "adapters/provider_factory.h"
 #include "core/chunker.h"
 #include "core/retriever.h"
 #include "core/in_memory_vector_store.h"
@@ -396,17 +397,13 @@ namespace {
 }
 
 HttpServer::HttpServer(const AppConfig &config, sqlite3 *db)
-    : address_(config.listen_address),
-      port_(config.listen_port),
+    : address_(config.server.listen_address),
+      port_(config.server.listen_port),
       ioc_(1),
-      worker_pool_(config.worker_threads),
-      worker_threads_(config.worker_threads),
+      worker_pool_(config.server.worker_threads),
+      worker_threads_(config.server.worker_threads),
       db_(db),
-      embedding_client_(std::make_unique<EmbeddingClient>(
-          config.provider_host,
-          config.provider_port,
-          config.embedding_model,
-          config.provider_timeout_ms)),
+      embedding_client_(create_embedding_client(config)),
       vector_store_(std::make_unique<InMemoryVectorStore>()),
       retriever_(std::make_unique<Retriever>(
           embedding_client_.get(),
@@ -414,11 +411,7 @@ HttpServer::HttpServer(const AppConfig &config, sqlite3 *db)
           db,
           &db_mutex_)),
       prompt_builder_(std::make_unique<PromptBuilder>()),
-      llm_client_(std::make_unique<LLMClient>(
-          config.provider_host,
-          config.provider_port,
-          config.chat_model,
-          config.provider_timeout_ms)) {
+      llm_client_(create_llm_client(config)) {
 }
 
 HttpServer::~HttpServer() = default;
