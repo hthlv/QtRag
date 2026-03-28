@@ -17,6 +17,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QTableWidgetItem>
 #include <QtGlobal>
 
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
@@ -127,12 +128,19 @@ void DocumentPage::setupUi() {
     tableWidget_->setHorizontalHeaderLabels({
         "文档ID", "文件名", "状态", "Chunk数", "创建时间"
     });
-    // 表格列宽自适应
+
+    // 文档列表列宽：大字段按内容撑开，最后一列继续吃掉剩余空间。
     tableWidget_->horizontalHeader()->setStretchLastSection(true);
     tableWidget_->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    tableWidget_->horizontalHeader()->setDefaultAlignment(Qt::AlignCenter);
+
+    // 文档管理页不需要左侧行号列，直接隐藏让表格更干净。
+    tableWidget_->verticalHeader()->setVisible(false);
+
     tableWidget_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     tableWidget_->setSelectionBehavior(QAbstractItemView::SelectRows);
     tableWidget_->setAlternatingRowColors(true);
+    tableWidget_->setShowGrid(true);
     rootLayout->addLayout(buttonLayout);
     rootLayout->addWidget(tableWidget_);
     // 点击上传按钮：选择文件并上传
@@ -234,10 +242,26 @@ void DocumentPage::renderDocumentsFromJson(const QByteArray &jsonData) {
         qint64 createdAt = static_cast<qint64>(item.value("created_at").toDouble());
         QString createdAtText =
                 QDateTime::fromSecsSinceEpoch(createdAt).toString("yyyy-MM-dd HH:mm:ss");
-        tableWidget_->setItem(i, 0, new QTableWidgetItem(id));
-        tableWidget_->setItem(i, 1, new QTableWidgetItem(filename));
-        tableWidget_->setItem(i, 2, new QTableWidgetItem(status));
-        tableWidget_->setItem(i, 3, new QTableWidgetItem(QString::number(chunkCount)));
-        tableWidget_->setItem(i, 4, new QTableWidgetItem(createdAtText));
+
+        // 每个单元格都单独设置对齐方式，让表格视觉更整齐。
+        auto *idItem = new QTableWidgetItem(id);
+        idItem->setTextAlignment(Qt::AlignVCenter | Qt::AlignLeft);
+        tableWidget_->setItem(i, 0, idItem);
+
+        auto *filenameItem = new QTableWidgetItem(filename);
+        filenameItem->setTextAlignment(Qt::AlignVCenter | Qt::AlignLeft);
+        tableWidget_->setItem(i, 1, filenameItem);
+
+        auto *statusItem = new QTableWidgetItem(status);
+        statusItem->setTextAlignment(Qt::AlignCenter);
+        tableWidget_->setItem(i, 2, statusItem);
+
+        auto *chunkCountItem = new QTableWidgetItem(QString::number(chunkCount));
+        chunkCountItem->setTextAlignment(Qt::AlignCenter);
+        tableWidget_->setItem(i, 3, chunkCountItem);
+
+        auto *createdAtItem = new QTableWidgetItem(createdAtText);
+        createdAtItem->setTextAlignment(Qt::AlignCenter);
+        tableWidget_->setItem(i, 4, createdAtItem);
     }
 }

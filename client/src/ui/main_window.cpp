@@ -74,16 +74,19 @@ void MainWindow::setupUi() {
     central->setObjectName("MainSurface");
     setCentralWidget(central);
     auto *rootLayout = new QVBoxLayout(central);
-    rootLayout->setContentsMargins(20, 20, 20, 16);
-    rootLayout->setSpacing(18);
+    // 主界面整体边距收紧，避免菜单栏下方和三栏区域之间留出过大空白。
+    rootLayout->setContentsMargins(12, 6, 12, 10);
+    rootLayout->setSpacing(8);
     auto *splitter = new QSplitter(this);
+    // 分栏拖拽条适当变窄，减少 panel 之间的视觉缝隙。
+    splitter->setHandleWidth(6);
 
     // 左侧面板用于展示知识库和会话列表。
     auto *leftPanel = new QWidget(this);
     leftPanel->setObjectName("LeftPanel");
     auto *leftLayout = new QVBoxLayout(leftPanel);
-    leftLayout->setContentsMargins(18, 18, 18, 18);
-    leftLayout->setSpacing(12);
+    leftLayout->setContentsMargins(14, 14, 14, 14);
+    leftLayout->setSpacing(8);
     auto *sessionTitle = new QLabel("会话", this);
     sessionTitle->setProperty("role", "sectionTitle");
     leftLayout->addWidget(sessionTitle);
@@ -101,8 +104,8 @@ void MainWindow::setupUi() {
     auto *centerPanel = new QWidget(this);
     centerPanel->setObjectName("CenterPanel");
     auto *centerLayout = new QVBoxLayout(centerPanel);
-    centerLayout->setContentsMargins(22, 18, 22, 22);
-    centerLayout->setSpacing(14);
+    centerLayout->setContentsMargins(16, 14, 16, 16);
+    centerLayout->setSpacing(10);
     auto *chatTitle = new QLabel("聊天区", this);
     chatTitle->setProperty("role", "sectionTitle");
     centerLayout->addWidget(chatTitle);
@@ -179,7 +182,7 @@ a { color: #1b7f4f; text-decoration: none; }
 #endif
     centerLayout->addWidget(chatView_, 1);
     auto *inputLayout = new QHBoxLayout();
-    inputLayout->setSpacing(12);
+    inputLayout->setSpacing(10);
     inputEdit_ = new QTextEdit(this);
     inputEdit_->setObjectName("InputEdit");
     inputEdit_->setPlaceholderText("请输入你的问题...");
@@ -201,7 +204,8 @@ a { color: #1b7f4f; text-decoration: none; }
     // 给引用栏一个更稳定的初始宽度，避免启动时占位过窄。
     rightPanel->setMinimumWidth(260);
     auto *rightLayout = new QVBoxLayout(rightPanel);
-    rightLayout->setContentsMargins(18, 18, 18, 18);
+    rightLayout->setContentsMargins(14, 14, 14, 14);
+    rightLayout->setSpacing(8);
     referenceList_ = new ReferencePanel(this);
     referenceList_->setMinimumWidth(260);
     rightLayout->addWidget(referenceList_);

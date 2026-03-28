@@ -59,14 +59,14 @@ QMenuBar {
     background: #f7f7f7;
     color: #262626;
     border-bottom: 1px solid #dddddd;
-    padding: 6px 10px;
-    spacing: 8px;
+    padding: 2px 8px;
+    spacing: 4px;
 }
 
 QMenuBar::item {
     background: transparent;
     border-radius: 10px;
-    padding: 7px 12px;
+    padding: 4px 10px;
 }
 
 QMenuBar::item:selected {
