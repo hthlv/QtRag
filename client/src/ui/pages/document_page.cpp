@@ -12,6 +12,8 @@
 #include <QPushButton>
 #include <QTableWidget>
 #include <QHeaderView>
+#include <QMenu>
+#include <QMessageBox>
 #include <QFileDialog>
 #include <QJsonParseError>
 #include <QJsonDocument>
@@ -118,8 +120,12 @@ void DocumentPage::setupUi() {
     uploadButton_->setProperty("variant", "primary");
     refreshButton_ = new QPushButton("刷新列表", this);
     refreshButton_->setProperty("variant", "ghost");
+    deleteButton_ = new QPushButton("删除文档", this);
+    deleteButton_->setProperty("variant", "ghost");
+    deleteButton_->setEnabled(false);
     buttonLayout->addWidget(uploadButton_);
     buttonLayout->addWidget(refreshButton_);
+    buttonLayout->addWidget(deleteButton_);
     buttonLayout->addStretch();
     // 表格区
     tableWidget_ = new QTableWidget(this);
@@ -139,8 +145,10 @@ void DocumentPage::setupUi() {
 
     tableWidget_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     tableWidget_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    tableWidget_->setSelectionMode(QAbstractItemView::SingleSelection);
     tableWidget_->setAlternatingRowColors(true);
     tableWidget_->setShowGrid(true);
+    tableWidget_->setContextMenuPolicy(Qt::CustomContextMenu);
     rootLayout->addLayout(buttonLayout);
     rootLayout->addWidget(tableWidget_);
     // 点击上传按钮：选择文件并上传
@@ -159,6 +167,15 @@ void DocumentPage::setupUi() {
     // 点击刷新按钮：拉取服务端文档列表
     connect(refreshButton_, &QPushButton::clicked, this, [this]() {
         refreshDocuments();
+    });
+    connect(deleteButton_, &QPushButton::clicked, this, [this]() {
+        deleteSelectedDocument();
+    });
+    connect(tableWidget_, &QTableWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
+        showDocumentContextMenu(pos);
+    });
+    connect(tableWidget_, &QTableWidget::itemSelectionChanged, this, [this]() {
+        deleteButton_->setEnabled(!selectedDocumentId().isEmpty());
     });
 }
 
@@ -230,6 +247,90 @@ void DocumentPage::refreshDocuments() {
     });
 }
 
+QString DocumentPage::selectedDocumentId() const {
+    if (!tableWidget_) {
+        return {};
+    }
+    const int row = tableWidget_->currentRow();
+    if (row < 0) {
+        return {};
+    }
+    auto *item = tableWidget_->item(row, 0);
+    return item ? item->text().trimmed() : QString();
+}
+
+QString DocumentPage::selectedDocumentFilename() const {
+    if (!tableWidget_) {
+        return {};
+    }
+    const int row = tableWidget_->currentRow();
+    if (row < 0) {
+        return {};
+    }
+    auto *item = tableWidget_->item(row, 1);
+    return item ? item->text().trimmed() : QString();
+}
+
+void DocumentPage::showDocumentContextMenu(const QPoint &pos) {
+    if (!tableWidget_) {
+        return;
+    }
+
+    if (auto *item = tableWidget_->itemAt(pos)) {
+        tableWidget_->setCurrentItem(item);
+    }
+
+    QMenu menu(this);
+    auto *deleteAction = menu.addAction("删除文档");
+    deleteAction->setEnabled(!selectedDocumentId().isEmpty());
+    connect(deleteAction, &QAction::triggered, this, [this]() {
+        deleteSelectedDocument();
+    });
+    menu.exec(tableWidget_->viewport()->mapToGlobal(pos));
+}
+
+void DocumentPage::deleteSelectedDocument() {
+    const QString docId = selectedDocumentId();
+    if (docId.isEmpty()) {
+        UiNotifier::info(this, "请先选择一个文档");
+        return;
+    }
+
+    const QString filename = selectedDocumentFilename().isEmpty()
+                                 ? docId
+                                 : selectedDocumentFilename();
+    const auto confirm = QMessageBox::question(
+        this,
+        "删除文档",
+        QString("确认删除文档“%1”吗？\n文档文件、分块和向量索引都会一并删除。").arg(filename));
+    if (confirm != QMessageBox::Yes) {
+        return;
+    }
+
+    QUrl url(serverBaseUrl_ + "/api/v1/docs/remove");
+    QNetworkRequest request(url);
+    request.setRawHeader("X-Doc-Id", docId.toUtf8());
+    auto *reply = networkManager_->post(request, QByteArray());
+    deleteButton_->setEnabled(false);
+    UiNotifier::info(this, "正在删除文档...", 2000);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        const QByteArray responseData = reply->readAll();
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            UiNotifier::warning(
+                this,
+                "删除失败",
+                extract_error_message(responseData, reply->errorString()),
+                true);
+            deleteButton_->setEnabled(!selectedDocumentId().isEmpty());
+            return;
+        }
+
+        UiNotifier::info(this, "文档已删除");
+        refreshDocuments();
+    });
+}
+
 void DocumentPage::renderDocumentsFromJson(const QByteArray &jsonData) {
     QJsonParseError parseError;
     QJsonDocument doc = QJsonDocument::fromJson(jsonData, &parseError);
@@ -239,6 +340,7 @@ void DocumentPage::renderDocumentsFromJson(const QByteArray &jsonData) {
     }
     QJsonObject rootObj = doc.object();
     QJsonArray items = rootObj.value("items").toArray();
+    const QString previouslySelectedId = selectedDocumentId();
     tableWidget_->setRowCount(items.count());
     for (int i = 0; i < items.count(); ++i) {
         QJsonObject item = items[i].toObject();
@@ -270,5 +372,14 @@ void DocumentPage::renderDocumentsFromJson(const QByteArray &jsonData) {
         auto *createdAtItem = new QTableWidgetItem(createdAtText);
         createdAtItem->setTextAlignment(Qt::AlignCenter);
         tableWidget_->setItem(i, 4, createdAtItem);
+
+        if (!previouslySelectedId.isEmpty() && id == previouslySelectedId) {
+            tableWidget_->setCurrentCell(i, 0);
+        }
     }
+
+    if (tableWidget_->currentRow() < 0 && tableWidget_->rowCount() > 0) {
+        tableWidget_->setCurrentCell(0, 0);
+    }
+    deleteButton_->setEnabled(!selectedDocumentId().isEmpty());
 }
