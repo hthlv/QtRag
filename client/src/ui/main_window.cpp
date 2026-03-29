@@ -60,7 +60,9 @@ MainWindow::MainWindow(QWidget *parent)
     setupUi();
     setupMenu();
     setWindowTitle("QtRAG Client");
-    resize(1200, 800);
+    // resize(1200, 800);
+    // 窗口初始设置为最大化
+    setWindowState(Qt::WindowMaximized);
     statusBar()->showMessage("就绪");
     // 启动时加载本地会话
     loadSessionsFromLocal();
