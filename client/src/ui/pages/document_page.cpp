@@ -15,6 +15,7 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QJsonParseError>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -175,7 +176,7 @@ void DocumentPage::setupUi() {
         showDocumentContextMenu(pos);
     });
     connect(tableWidget_, &QTableWidget::itemSelectionChanged, this, [this]() {
-        deleteButton_->setEnabled(!selectedDocumentId().isEmpty());
+        deleteButton_->setEnabled(!selectedDocumentId().isEmpty() && !isPendingDocumentSelected());
     });
 }
 
@@ -203,12 +204,15 @@ void DocumentPage::uploadFile(const QStringList &filePaths) {
         request.setHeader(QNetworkRequest::ContentTypeHeader, "text/plain; charset=utf-8");
         request.setRawHeader("X-Filename", fileInfo.fileName().toUtf8());
         request.setRawHeader("X-Kb-Id", "default");
+        // 请求已经发出后，先在表格里插入一个本地占位项，避免用户误以为没有响应。
+        const QString pendingId = addPendingUploadRow(fileInfo.fileName());
         QNetworkReply *reply = networkManager_->post(request, fileData);
         // 上传完成后的处理逻辑
-        connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        connect(reply, &QNetworkReply::finished, this, [this, reply, pendingId]() {
             const QByteArray responseData = reply->readAll();
             reply->deleteLater();
             if (reply->error() != QNetworkReply::NoError) {
+                removePendingUploadRow(pendingId);
                 UiNotifier::warning(
                     this,
                     "上传失败",
@@ -220,9 +224,12 @@ void DocumentPage::uploadFile(const QStringList &filePaths) {
             QJsonParseError parseError;
             QJsonDocument doc = QJsonDocument::fromJson(responseData, &parseError);
             if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+                removePendingUploadRow(pendingId);
                 UiNotifier::warning(this, "上传失败", "服务端返回格式不正确", true);
                 return;
             }
+            // 成功后立刻移除本地占位项，再用服务端真实数据刷新，避免列表里出现两条同名记录。
+            removePendingUploadRow(pendingId);
             UiNotifier::info(this, "文档已上传");
             refreshDocuments();
         });
@@ -273,6 +280,12 @@ QString DocumentPage::selectedDocumentFilename() const {
     return item ? item->text().trimmed() : QString();
 }
 
+bool DocumentPage::isPendingDocumentSelected() const {
+    const QString docId = selectedDocumentId();
+    // 占位项没有真实 doc_id，凡是命中本地 pending map 的都不能当成服务端文档操作。
+    return !docId.isEmpty() && pendingUploads_.contains(docId);
+}
+
 void DocumentPage::showDocumentContextMenu(const QPoint &pos) {
     if (!tableWidget_) {
         return;
@@ -295,6 +308,10 @@ void DocumentPage::deleteSelectedDocument() {
     const QString docId = selectedDocumentId();
     if (docId.isEmpty()) {
         UiNotifier::info(this, "请先选择一个文档");
+        return;
+    }
+    if (isPendingDocumentSelected()) {
+        UiNotifier::info(this, "文档仍在上传中，暂时不能删除");
         return;
     }
 
@@ -324,7 +341,7 @@ void DocumentPage::deleteSelectedDocument() {
                 "删除失败",
                 extract_error_message(responseData, reply->errorString()),
                 true);
-            deleteButton_->setEnabled(!selectedDocumentId().isEmpty());
+            deleteButton_->setEnabled(!selectedDocumentId().isEmpty() && !isPendingDocumentSelected());
             return;
         }
 
@@ -342,32 +359,56 @@ void DocumentPage::renderDocumentsFromJson(const QByteArray &jsonData) {
     }
     QJsonObject rootObj = doc.object();
     QJsonArray items = rootObj.value("items").toArray();
+    QList<DocumentRow> serverRows;
+    serverRows.reserve(items.count());
+    for (const QJsonValue &value: items) {
+        const QJsonObject item = value.toObject();
+        DocumentRow row;
+        row.id = item.value("id").toString();
+        row.filename = item.value("filename").toString();
+        row.status = item.value("status").toString();
+        row.chunkCount = item.value("chunk_count").toInt();
+        row.createdAt = QDateTime::fromSecsSinceEpoch(static_cast<qint64>(item.value("created_at").toDouble()));
+        serverRows.push_back(row);
+    }
+    serverRowsCache_ = serverRows;
+    renderDocumentRows(serverRowsCache_);
+}
+
+void DocumentPage::renderDocumentRows(const QList<DocumentRow> &serverRows) {
     const QString previouslySelectedId = selectedDocumentId();
-    tableWidget_->setRowCount(items.count());
-    for (int i = 0; i < items.count(); ++i) {
-        QJsonObject item = items[i].toObject();
-        QString id = item.value("id").toString();
-        QString filename = item.value("filename").toString();
-        QString status = item.value("status").toString();
-        int chunkCount = item.value("chunk_count").toInt();
-        qint64 createdAt = static_cast<qint64>(item.value("created_at").toDouble());
-        QString createdAtText =
-                QDateTime::fromSecsSinceEpoch(createdAt).toString("yyyy-MM-dd HH:mm:ss");
+    QList<DocumentRow> rows;
+    rows.reserve(pendingUploads_.size() + serverRows.size());
+
+    // 本地“上传中”占位项始终排在前面，让用户第一时间看到刚添加的文件。
+    for (auto it = pendingUploads_.cbegin(); it != pendingUploads_.cend(); ++it) {
+        rows.push_back(it.value());
+    }
+    for (const auto &row: serverRows) {
+        rows.push_back(row);
+    }
+
+    tableWidget_->setRowCount(rows.count());
+    for (int i = 0; i < rows.count(); ++i) {
+        const auto &row = rows[i];
+        const QString createdAtText = row.createdAt.isValid()
+                                          ? row.createdAt.toString("yyyy-MM-dd HH:mm:ss")
+                                          : "-";
 
         // 每个单元格都单独设置对齐方式，让表格视觉更整齐。
-        auto *idItem = new QTableWidgetItem(id);
+        auto *idItem = new QTableWidgetItem(row.id);
         idItem->setTextAlignment(Qt::AlignVCenter | Qt::AlignLeft);
         tableWidget_->setItem(i, 0, idItem);
 
-        auto *filenameItem = new QTableWidgetItem(filename);
+        auto *filenameItem = new QTableWidgetItem(row.filename);
         filenameItem->setTextAlignment(Qt::AlignVCenter | Qt::AlignLeft);
         tableWidget_->setItem(i, 1, filenameItem);
 
-        auto *statusItem = new QTableWidgetItem(status);
+        auto *statusItem = new QTableWidgetItem(row.status);
         statusItem->setTextAlignment(Qt::AlignCenter);
         tableWidget_->setItem(i, 2, statusItem);
 
-        auto *chunkCountItem = new QTableWidgetItem(QString::number(chunkCount));
+        auto *chunkCountItem = new QTableWidgetItem(row.chunkCount > 0 ? QString::number(row.chunkCount) : "-");
         chunkCountItem->setTextAlignment(Qt::AlignCenter);
         tableWidget_->setItem(i, 3, chunkCountItem);
 
@@ -375,7 +416,7 @@ void DocumentPage::renderDocumentsFromJson(const QByteArray &jsonData) {
         createdAtItem->setTextAlignment(Qt::AlignCenter);
         tableWidget_->setItem(i, 4, createdAtItem);
 
-        if (!previouslySelectedId.isEmpty() && id == previouslySelectedId) {
+        if (!previouslySelectedId.isEmpty() && row.id == previouslySelectedId) {
             tableWidget_->setCurrentCell(i, 0);
         }
     }
@@ -383,5 +424,27 @@ void DocumentPage::renderDocumentsFromJson(const QByteArray &jsonData) {
     if (tableWidget_->currentRow() < 0 && tableWidget_->rowCount() > 0) {
         tableWidget_->setCurrentCell(0, 0);
     }
-    deleteButton_->setEnabled(!selectedDocumentId().isEmpty());
+    deleteButton_->setEnabled(!selectedDocumentId().isEmpty() && !isPendingDocumentSelected());
+}
+
+QString DocumentPage::addPendingUploadRow(const QString &filename) {
+    DocumentRow row;
+    // 用本地临时 ID 标识占位项，和服务端真正的 doc_xxx 保持明显区分。
+    row.id = QString("uploading_%1").arg(QDateTime::currentMSecsSinceEpoch());
+    row.filename = filename;
+    row.status = "上传中";
+    row.chunkCount = 0;
+    row.createdAt = QDateTime::currentDateTime();
+    pendingUploads_.insert(row.id, row);
+    // 占位项插入后立即基于“最近一次服务端列表 + 本地 pending”重绘。
+    renderDocumentRows(serverRowsCache_);
+    return row.id;
+}
+
+void DocumentPage::removePendingUploadRow(const QString &pendingId) {
+    if (pendingUploads_.remove(pendingId) == 0) {
+        return;
+    }
+    // 移除占位项后继续沿用缓存的服务端列表，避免界面在下一次 refresh 返回前短暂清空。
+    renderDocumentRows(serverRowsCache_);
 }
