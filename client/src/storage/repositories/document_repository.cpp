@@ -32,7 +32,7 @@ bool DocumentRepository::insertOrReplace(const DocumentRecord &doc) {
     return true;
 }
 
-QVector<DocumentRecord> DocumentRepository::listAll() {
+QVector<DocumentRecord> DocumentRepository::list_all() {
     QSqlQuery query(db_);
     QVector<DocumentRecord> result;
 

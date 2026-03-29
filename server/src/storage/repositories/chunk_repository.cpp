@@ -7,17 +7,17 @@
 #include <stdexcept>
 
 ChunkRepository::ChunkRepository(sqlite3 *db)
-    :db_(db){
+    : db_(db) {
 }
 
 void ChunkRepository::insert(const ChunkRecord &chunk) {
     // 通过预编译语句写入分块内容和顺序信息。
-    const char* sql = R"(
+    const char *sql = R"(
         INSERT INTO chunks (
             id, doc_id, chunk_index, content, created_at
         ) VALUES (?, ?, ?, ?, ?)
     )";
-    sqlite3_stmt* stmt = nullptr;
+    sqlite3_stmt *stmt = nullptr;
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
         throw std::runtime_error("prepare insert chunk failed");
     }
@@ -43,7 +43,7 @@ std::vector<ChunkRecord> ChunkRepository::list_by_doc_id(const std::string &doc_
         WHERE doc_id = ?
         ORDER BY chunk_index ASC
     )";
-    sqlite3_stmt* stmt = nullptr;
+    sqlite3_stmt *stmt = nullptr;
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
         throw std::runtime_error("prepare list chunks failed");
     }
@@ -53,13 +53,30 @@ std::vector<ChunkRecord> ChunkRepository::list_by_doc_id(const std::string &doc_
         ChunkRecord chunk;
 
         // 按 SELECT 字段顺序把当前行拷贝到 ChunkRecord。
-        chunk.id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-        chunk.doc_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        chunk.id = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 0));
+        chunk.doc_id = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 1));
         chunk.chunk_index = sqlite3_column_int(stmt, 2);
-        chunk.content = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        chunk.content = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 3));
         chunk.created_at = sqlite3_column_int64(stmt, 4);
         result.push_back(std::move(chunk));
     }
     sqlite3_finalize(stmt);
     return result;
+}
+
+void ChunkRepository::remove_by_doc_id(const std::string &doc_id) {
+    const char *sql = R"(
+        DELETE FROM chunks
+        WHERE doc_id = ?
+    )";
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        throw std::runtime_error("prepare remove chunks failed");
+    }
+    sqlite3_bind_text(stmt, 1, doc_id.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        throw std::runtime_error("prepare remove chunks failed");
+        sqlite3_finalize(stmt);
+    }
+    sqlite3_finalize(stmt);
 }

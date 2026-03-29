@@ -20,6 +20,8 @@ public:
     // 根据文档 ID 获取其全部分块，按顺序返回。
     std::vector<ChunkRecord> list_by_doc_id(const std::string &doc_id);
 
+    // 根据文档 ID 删除chunk
+    void remove_by_doc_id(const std::string &doc_id);
 private:
     // 底层 sqlite3 连接句柄。
     sqlite3 *db_;

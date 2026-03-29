@@ -71,9 +71,9 @@ namespace {
     std::string build_error_json(unsigned code, const std::string &message) {
         std::ostringstream oss;
         oss << "{"
-            << R"("code":)" << code << ","
-            << R"("message":")" << escape_json(message) << "\""
-            << "}";
+                << R"("code":)" << code << ","
+                << R"("message":")" << escape_json(message) << "\""
+                << "}";
         return oss.str();
     }
 
@@ -257,6 +257,11 @@ namespace {
         return ofs.good();
     }
 
+    // 删除本地文件
+    bool delete_file(const std::string &path) {
+        return std::filesystem::remove(path);
+    }
+
     // 将文件列表拼成 json
     std::string build_document_list_json(const std::vector<DocumentRecord> &docs) {
         std::ostringstream oss;
@@ -348,10 +353,10 @@ namespace {
                                                         std::size_t chunk_count) {
         std::ostringstream oss;
         oss << "{"
-            << R"("scope":")" << escape_json(scope) << "\","
-            << R"("document_count":)" << document_count << ","
-            << R"("chunk_count":)" << chunk_count << ","
-            << R"("status":"reindexed")";
+                << R"("scope":")" << escape_json(scope) << "\","
+                << R"("document_count":)" << document_count << ","
+                << R"("chunk_count":)" << chunk_count << ","
+                << R"("status":"reindexed")";
         if (!doc_id.empty()) {
             oss << "," << R"("doc_id":")" << escape_json(doc_id) << "\"";
         }
@@ -385,20 +390,20 @@ namespace {
                                       const std::string &default_llm_id) {
         std::ostringstream oss;
         oss << "{"
-            << R"("default_llm_id":")" << escape_json(default_llm_id) << "\","
-            << R"("items":[)";
+                << R"("default_llm_id":")" << escape_json(default_llm_id) << "\","
+                << R"("items":[)";
         for (std::size_t i = 0; i < options.size(); ++i) {
             const auto &item = options[i];
             if (i > 0) {
                 oss << ",";
             }
             oss << "{"
-                << R"("id":")" << escape_json(item.id) << "\","
-                << R"("label":")" << escape_json(item.label) << "\","
-                << R"("provider_type":")" << escape_json(item.provider.type) << "\","
-                << R"("model":")" << escape_json(item.model) << "\","
-                << R"("is_default":)" << (item.id == default_llm_id ? "true" : "false")
-                << "}";
+                    << R"("id":")" << escape_json(item.id) << "\","
+                    << R"("label":")" << escape_json(item.label) << "\","
+                    << R"("provider_type":")" << escape_json(item.provider.type) << "\","
+                    << R"("model":")" << escape_json(item.model) << "\","
+                    << R"("is_default":)" << (item.id == default_llm_id ? "true" : "false")
+                    << "}";
         }
         oss << "]}";
         return oss.str();
@@ -456,7 +461,7 @@ HttpServer::HttpServer(const AppConfig &config, sqlite3 *db)
       llm_options_(config.llm_options),
       default_llm_id_(config.default_llm_id) {
     // 启动时一次性构建所有可选 LLM 实例，运行中按请求头快速路由。
-    for (const auto &option : llm_options_) {
+    for (const auto &option: llm_options_) {
         llm_clients_.emplace(option.id, create_llm_client(option));
     }
     // 构造完成后统一注册所有 HTTP 路由，后续扩展接口时只需要改这里。
@@ -500,7 +505,7 @@ void HttpServer::reload_vector_store_from_storage() {
 void HttpServer::register_routes() {
     // 健康检查。
     router_.add_json_route(http::verb::get, "/health", [this](const Request &req) {
-        (void)this;
+        (void) this;
         return make_json_response(
             req.version(),
             http::status::ok,
@@ -516,6 +521,9 @@ void HttpServer::register_routes() {
     });
     router_.add_json_route(http::verb::post, "/api/v1/docs/upload", [this](const Request &req) {
         return handle_upload_document(req);
+    });
+    router_.add_json_route(http::verb::post, "/api/v1/docs/remove", [this](const Request &req) {
+        return handle_remove_document(req);
     });
 
     // 检索与聊天接口。
@@ -757,7 +765,7 @@ HttpServer::Response HttpServer::handle_list_documents(const Request &req) {
         {
             std::lock_guard<std::mutex> lock(db_mutex_);
             DocumentRepository repo(db_);
-            docs = repo.listAll();
+            docs = repo.list_all();
         }
         return make_json_response(
             req.version(),
@@ -895,7 +903,7 @@ HttpServer::Response HttpServer::handle_regenerate_embeddings(const Request &req
                 }
                 target_docs.push_back(*document);
             } else {
-                target_docs = doc_repo.listAll();
+                target_docs = doc_repo.list_all();
             }
         }
 
@@ -903,7 +911,7 @@ HttpServer::Response HttpServer::handle_regenerate_embeddings(const Request &req
         EmbeddingRepository embedding_repo(db_);
 
         std::size_t regenerated_chunk_count = 0;
-        for (const auto &document : target_docs) {
+        for (const auto &document: target_docs) {
             std::vector<ChunkRecord> chunks;
             {
                 // 每个文档的 chunk 先读出来，后面在锁外调用 embedding provider。
@@ -913,7 +921,7 @@ HttpServer::Response HttpServer::handle_regenerate_embeddings(const Request &req
 
             std::vector<EmbeddingRecord> regenerated_records;
             regenerated_records.reserve(chunks.size());
-            for (const auto &chunk : chunks) {
+            for (const auto &chunk: chunks) {
                 EmbeddingRecord record;
                 record.chunk_id = chunk.id;
                 record.doc_id = chunk.doc_id;
@@ -926,7 +934,7 @@ HttpServer::Response HttpServer::handle_regenerate_embeddings(const Request &req
             {
                 // embedding 结果统一回写数据库，并刷新文档状态时间戳。
                 std::lock_guard<std::mutex> lock(db_mutex_);
-                for (const auto &record : regenerated_records) {
+                for (const auto &record: regenerated_records) {
                     embedding_repo.insert_or_replace(record);
                 }
 
@@ -1027,6 +1035,53 @@ void HttpServer::handle_chat_stream(boost::asio::ip::tcp::socket &socket,
         } catch (...) {
             // 如果连错误事件都发不出去，就只能静默结束
         }
+    }
+}
+
+HttpServer::Response HttpServer::handle_remove_document(const Request &req) {
+    // 根据请求头获取doc_id
+    const std::string doc_id = get_header_value(req, "X-Doc-Id");
+    try {
+        // 1. 先根据chunk_id删除chunk_embedding
+        // 2. 根据doc_id删除chunk
+        // 3. 根据doc_id删除document
+        ChunkRepository chunk_repo(db_);
+        EmbeddingRepository embedding_repo(db_);
+        {
+            // 获取所有的需要删除的chunk
+            auto chunks = chunk_repo.list_by_doc_id(doc_id);
+            // 删除chunk
+            for (const auto &chunk: chunks) {
+                embedding_repo.remove_by_chunk_id(chunk.id);
+            }
+        }
+
+        // 删除所有chunk
+        chunk_repo.remove_by_doc_id(doc_id);
+
+        // 删除 doc
+        DocumentRepository doc_repo(db_);
+        auto document = doc_repo.find_by_id(doc_id);
+
+        doc_repo.remove_by_id(doc_id);
+        // 删除本地存储的文档
+        delete_file(document->file_path);
+        std::ostringstream oss;
+        oss << R"({"status": "success"})";
+
+        return make_json_response(
+            req.version(),
+            http::status::ok,
+            oss.str()
+        );
+    } catch (const std::exception &ex) {
+        log_error("http", std::string("remove document failed: ") + ex.what());
+        const auto error = classify_internal_error(ex);
+        return make_error_response(
+            req.version(),
+            http::status::internal_server_error,
+            error.code,
+            error.message);
     }
 }
 

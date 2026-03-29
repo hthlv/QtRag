@@ -76,6 +76,9 @@ private:
     // SSE 流式 chat
     void handle_chat_stream(boost::asio::ip::tcp::socket &socket, const Request &req);
 
+    // 删除文档
+    Response handle_remove_document(const Request &req);
+
     // 返回错误响应
     Response make_error_response(unsigned version, boost::beast::http::status status, unsigned code,
                                  const std::string &message);

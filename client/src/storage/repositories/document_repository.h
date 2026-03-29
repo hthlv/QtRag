@@ -17,7 +17,7 @@ public:
     bool insertOrReplace(const DocumentRecord &doc);
 
     // 查询全部文档，按创建时间倒序。
-    QVector<DocumentRecord> listAll();
+    QVector<DocumentRecord> list_all();
 
 private:
     // 当前仓储使用的数据库连接。

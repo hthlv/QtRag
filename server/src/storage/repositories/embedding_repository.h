@@ -13,6 +13,8 @@ public:
     void insert_or_replace(const EmbeddingRecord &record);
     // 读取全部 embedding 记录，用于服务端启动时恢复索引
     std::vector<EmbeddingRecord> list_all();
+    // 根据 chunk_id 删除embedding
+    void remove_by_chunk_id(const std::string &chunk_id);
 private:
     sqlite3 *db_;
 };

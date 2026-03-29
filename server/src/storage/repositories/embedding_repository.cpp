@@ -87,3 +87,20 @@ std::vector<EmbeddingRecord> EmbeddingRepository::list_all() {
     sqlite3_finalize(stmt);
     return result;
 }
+
+void EmbeddingRepository::remove_by_chunk_id(const std::string &chunk_id) {
+    const char *sql = R"(
+        DELETE FROM chunk_embeddings
+        WHERE chunk_id = ?;
+    )";
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        throw std::runtime_error("remove embedding failed");
+    }
+    sqlite3_bind_text(stmt, 1, chunk_id.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        throw std::runtime_error("remove embedding failed");
+    }
+    sqlite3_finalize(stmt);
+}
