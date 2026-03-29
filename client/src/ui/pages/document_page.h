@@ -16,7 +16,7 @@ public:
 private:
     void setupUi();
     // 上传一个文件到服务器
-    void uploadFile(const QString &filePath);
+    void uploadFile(const QStringList &filePath);
     // 从服务端拉去文档列表
     void refreshDocuments();
     // 根据当前选中行返回文档 ID。

@@ -153,16 +153,16 @@ void DocumentPage::setupUi() {
     rootLayout->addWidget(tableWidget_);
     // 点击上传按钮：选择文件并上传
     connect(uploadButton_, &QPushButton::clicked, this, [this]() {
-        QString filePath = QFileDialog::getOpenFileName(
+        QStringList filePaths = QFileDialog::getOpenFileNames(
             this,
             "选择文档",
             QString(),
             "Text Files (*.txt *.md)"
         );
-        if (filePath.isEmpty()) {
+        if (filePaths.isEmpty()) {
             return;
         }
-        uploadFile(filePath);
+        uploadFile(filePaths);
     });
     // 点击刷新按钮：拉取服务端文档列表
     connect(refreshButton_, &QPushButton::clicked, this, [this]() {
@@ -179,52 +179,54 @@ void DocumentPage::setupUi() {
     });
 }
 
-void DocumentPage::uploadFile(const QString &filePath) {
-    QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly)) {
-        UiNotifier::warning(this, "上传失败", "无法打开文件", true);
-        return;
-    }
-    const QByteArray rawData = file.readAll();
-    file.close();
-    QByteArray fileData;
-    QString decodeError;
-    if (!decode_text_file_to_utf8(rawData, &fileData, &decodeError)) {
-        UiNotifier::warning(this, "上传失败", decodeError, true);
-        return;
-    }
-    QFileInfo fileInfo(filePath);
-    // 构造上传请求
-    QUrl url(serverBaseUrl_ + "/api/v1/docs/upload");
-    QNetworkRequest request(url);
-    // 1. 请求体统一传 UTF-8 文本，和服务端 embedding 的输入要求保持一致
-    // 2. 用自定义 Header 携带文件名和知识库 id
-    request.setHeader(QNetworkRequest::ContentTypeHeader, "text/plain; charset=utf-8");
-    request.setRawHeader("X-Filename", fileInfo.fileName().toUtf8());
-    request.setRawHeader("X-Kb-Id", "default");
-    QNetworkReply *reply = networkManager_->post(request, fileData);
-    // 上传完成后的处理逻辑
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
-        const QByteArray responseData = reply->readAll();
-        reply->deleteLater();
-        if (reply->error() != QNetworkReply::NoError) {
-            UiNotifier::warning(
-                this,
-                "上传失败",
-                extract_error_message(responseData, reply->errorString()),
-                true);
+void DocumentPage::uploadFile(const QStringList &filePaths) {
+    for (auto filePath: filePaths) {
+        QFile file(filePath);
+        if (!file.open(QIODevice::ReadOnly)) {
+            UiNotifier::warning(this, "上传失败", "无法打开文件", true);
             return;
         }
-        // 简单检查服务端返回
-        QJsonParseError parseError;
-        QJsonDocument doc = QJsonDocument::fromJson(responseData, &parseError);
-        if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
-            UiNotifier::warning(this, "上传失败", "服务端返回格式不正确", true);
+        const QByteArray rawData = file.readAll();
+        file.close();
+        QByteArray fileData;
+        QString decodeError;
+        if (!decode_text_file_to_utf8(rawData, &fileData, &decodeError)) {
+            UiNotifier::warning(this, "上传失败", decodeError, true);
             return;
         }
-        UiNotifier::info(this, "文档已上传");
-        refreshDocuments();
-    });
+        QFileInfo fileInfo(filePath);
+        // 构造上传请求
+        QUrl url(serverBaseUrl_ + "/api/v1/docs/upload");
+        QNetworkRequest request(url);
+        // 1. 请求体统一传 UTF-8 文本，和服务端 embedding 的输入要求保持一致
+        // 2. 用自定义 Header 携带文件名和知识库 id
+        request.setHeader(QNetworkRequest::ContentTypeHeader, "text/plain; charset=utf-8");
+        request.setRawHeader("X-Filename", fileInfo.fileName().toUtf8());
+        request.setRawHeader("X-Kb-Id", "default");
+        QNetworkReply *reply = networkManager_->post(request, fileData);
+        // 上传完成后的处理逻辑
+        connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+            const QByteArray responseData = reply->readAll();
+            reply->deleteLater();
+            if (reply->error() != QNetworkReply::NoError) {
+                UiNotifier::warning(
+                    this,
+                    "上传失败",
+                    extract_error_message(responseData, reply->errorString()),
+                    true);
+                return;
+            }
+            // 简单检查服务端返回
+            QJsonParseError parseError;
+            QJsonDocument doc = QJsonDocument::fromJson(responseData, &parseError);
+            if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+                UiNotifier::warning(this, "上传失败", "服务端返回格式不正确", true);
+                return;
+            }
+            UiNotifier::info(this, "文档已上传");
+            refreshDocuments();
+        });
+    }
 }
 
 void DocumentPage::refreshDocuments() {
