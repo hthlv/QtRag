@@ -1041,31 +1041,47 @@ void HttpServer::handle_chat_stream(boost::asio::ip::tcp::socket &socket,
 HttpServer::Response HttpServer::handle_remove_document(const Request &req) {
     // 根据请求头获取doc_id
     const std::string doc_id = get_header_value(req, "X-Doc-Id");
+    if (doc_id.empty()) {
+        return make_error_response(
+            req.version(),
+            http::status::bad_request,
+            kErrorMissingHeader,
+            "missing X-Doc-Id header");
+    }
     try {
         // 1. 先根据chunk_id删除chunk_embedding
         // 2. 根据doc_id删除chunk
         // 3. 根据doc_id删除document
-        ChunkRepository chunk_repo(db_);
-        EmbeddingRepository embedding_repo(db_);
+        std::string file_path;
         {
+            std::lock_guard<std::mutex> lock(db_mutex_);
+            ChunkRepository chunk_repo(db_);
+            EmbeddingRepository embedding_repo(db_);
+            DocumentRepository doc_repo(db_);
+
+            const auto document = doc_repo.find_by_id(doc_id);
+            if (!document.has_value()) {
+                return make_error_response(
+                    req.version(),
+                    http::status::not_found,
+                    kErrorInvalidParameter,
+                    "document not found");
+            }
+            file_path = document->file_path;
+
             // 获取所有的需要删除的chunk
             auto chunks = chunk_repo.list_by_doc_id(doc_id);
-            // 删除chunk
             for (const auto &chunk: chunks) {
                 embedding_repo.remove_by_chunk_id(chunk.id);
             }
+
+            chunk_repo.remove_by_doc_id(doc_id);
+            doc_repo.remove_by_id(doc_id);
         }
-
-        // 删除所有chunk
-        chunk_repo.remove_by_doc_id(doc_id);
-
-        // 删除 doc
-        DocumentRepository doc_repo(db_);
-        auto document = doc_repo.find_by_id(doc_id);
-
-        doc_repo.remove_by_id(doc_id);
         // 删除本地存储的文档
-        delete_file(document->file_path);
+        delete_file(file_path);
+        // 删除完成后重新按数据库状态恢复内存索引，避免检索命中已删除向量。
+        reload_vector_store_from_storage();
         std::ostringstream oss;
         oss << R"({"status": "success"})";
 
