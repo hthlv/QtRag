@@ -662,28 +662,15 @@ HttpServer::Response HttpServer::handle_upload_document(const Request &req) {
         ChunkRepository chunkRepo(db_);
         EmbeddingRepository embeddingRepo(db_);
 
-        // 1. 切片
+        // 1. 先做语义切片。Chunker 返回的是最终要入库/入索引的 chunk 文本。
+        // 这里故意把切片和后续 embedding 分开，便于在 chunk 数异常时尽早失败。
         Chunker chunker(800, 150);
         auto chunks = chunker.split(req.body());
-        // 2. 先在内存中准备好 chunk + embedding
-        struct PreparedChunk {
-            ChunkRecord chunk;
-            std::vector<float> embedding;
-        };
-        std::vector<PreparedChunk> prepared_chunks;
-        prepared_chunks.reserve(chunks.size());
-        for (std::size_t i = 0; i < chunks.size(); ++i) {
-            PreparedChunk item;
-            item.chunk.id = doc_id + "_chunk_" + std::to_string(i);
-            item.chunk.doc_id = doc_id;
-            item.chunk.chunk_index = static_cast<int>(i);
-            item.chunk.content = chunks[i];
-            item.chunk.created_at = now;
-            // 先生成 embedding
-            item.embedding = embedding_client_->embed(item.chunk.content);
-            prepared_chunks.push_back(std::move(item));
-        }
-        // 3. 写数据库：documents / chunks / chunk_embeddings
+        const int chunk_count = static_cast<int>(chunks.size());
+        // 2. 先写 documents 记录，再按 chunk 流式处理。
+        // 这样可以把上传流程拆成：
+        //   文本切分 -> 当前 chunk embedding -> 落库 -> 写向量索引
+        // 而不是把“全部 chunk 文本 + 全部 embedding”一起攒在内存里。
         {
             std::lock_guard<std::mutex> lock(db_mutex_);
             DocumentRecord doc;
@@ -696,34 +683,58 @@ HttpServer::Response HttpServer::handle_upload_document(const Request &req) {
             doc.created_at = now;
             doc.updated_at = now;
             docRepo.insert(doc);
+        }
 
-            for (const auto &item: prepared_chunks) {
-                // 写 chunk 表
-                chunkRepo.insert(item.chunk);
-                // 写 embedding 表，实现索引持久化
+        // 3. 逐个 chunk 生成 embedding、落库并写入内存索引。
+        // 这里刻意不再保留 prepared_chunks，避免内存峰值随 chunk 数线性放大。
+        // 当前循环任意时刻只保留：
+        //   1 个 chunk 文本
+        //   1 个 embedding 结果
+        // 而不是整篇文档的完整中间结果。
+        for (std::size_t i = 0; i < chunks.size(); ++i) {
+            ChunkRecord chunk;
+            chunk.id = doc_id + "_chunk_" + std::to_string(i);
+            chunk.doc_id = doc_id;
+            chunk.chunk_index = static_cast<int>(i);
+            // 直接 move 出当前 chunk，避免再复制一份正文文本。
+            chunk.content = std::move(chunks[i]);
+            chunk.created_at = now;
+
+            // embedding 只保留当前 chunk 的一份临时结果，用完立即释放。
+            // 数据库和向量索引各自会复制自己需要的内容，因此这里不需要长期持有它。
+            std::vector<float> embedding = embedding_client_->embed(chunk.content);
+            {
+                std::lock_guard<std::mutex> lock(db_mutex_);
+                chunkRepo.insert(chunk);
+
                 EmbeddingRecord embeddingRecord;
-                embeddingRecord.chunk_id = item.chunk.id;
-                embeddingRecord.doc_id = item.chunk.doc_id;
-                embeddingRecord.content = item.chunk.content;
-                embeddingRecord.embedding = item.embedding;
+                embeddingRecord.chunk_id = chunk.id;
+                embeddingRecord.doc_id = chunk.doc_id;
+                embeddingRecord.content = chunk.content;
+                embeddingRecord.embedding = embedding;
                 embeddingRecord.created_at = now;
                 embeddingRepo.insert_or_replace(embeddingRecord);
             }
-            // 更新文档状态
+
+            vector_store_->add(
+                chunk.id,
+                chunk.doc_id,
+                chunk.content,
+                embedding);
+
+            // 主循环之后不会再使用原始 chunk 文本，主动释放已处理元素占用的容量。
+            // 仅仅 clear() 通常不会归还容量，这里用 swap 是为了尽快把大字符串占用还给分配器。
+            std::string().swap(chunks[i]);
+        }
+
+        // 4. 全部 chunk 处理完后，回写文档状态与统计信息。
+        {
+            std::lock_guard<std::mutex> lock(db_mutex_);
             docRepo.update_status_and_chunk_count(
                 doc_id,
                 "indexed",
-                static_cast<int>(prepared_chunks.size()),
+                chunk_count,
                 current_timestamp());
-        }
-
-        // 4. 数据库写完后，再写入内存向量索引
-        for (const auto &item: prepared_chunks) {
-            vector_store_->add(
-                item.chunk.id,
-                item.chunk.doc_id,
-                item.chunk.content,
-                item.embedding);
         }
 
         // 5. 返回成功响应
@@ -732,7 +743,7 @@ HttpServer::Response HttpServer::handle_upload_document(const Request &req) {
                 << R"("doc_id":")" << escape_json(doc_id) << "\","
                 << R"("filename":")" << escape_json(safe_filename) << "\","
                 << R"("status":"indexed",)"
-                << R"("chunk_count":)" << chunks.size()
+                << R"("chunk_count":)" << chunk_count
                 << "}";
         return make_json_response(
             req.version(),
