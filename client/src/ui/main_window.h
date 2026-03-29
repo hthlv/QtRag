@@ -9,6 +9,7 @@
 #include <QSqlDatabase>
 class QListWidget;
 class QResizeEvent;
+class QEvent;
 class QSplitter;
 class QJsonArray;
 class QTextEdit;
@@ -112,11 +113,16 @@ private:
 
     void updateResponsivePanels();
 
+    // 统一处理发送动作，按钮点击和回车发送共用这套逻辑。
+    void submitInputMessage();
+
     // 聊天区右键菜单只保留复制，避免出现浏览器默认动作。
     void showChatContextMenu(const QPoint &pos);
 
 protected:
     void resizeEvent(QResizeEvent *event) override;
+
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 #ifdef QTRAG_CLIENT_HAS_WEBENGINE
     QString buildChatPageHtml() const;

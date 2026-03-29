@@ -26,6 +26,8 @@
 #include <QHBoxLayout>
 #include <QMessageBox>
 #include <QResizeEvent>
+#include <QEvent>
+#include <QKeyEvent>
 #include <QSizePolicy>
 #include <QStatusBar>
 #include <QNetworkAccessManager>
@@ -213,6 +215,8 @@ a { color: #1b7f4f; text-decoration: none; }
     inputEdit_->setFocusPolicy(Qt::StrongFocus);
     inputEdit_->setAttribute(Qt::WA_InputMethodEnabled, true);
     inputEdit_->setInputMethodHints(Qt::ImhMultiLine);
+    // 输入框拦截 Enter，实现“回车发送，Shift+Enter 换行”。
+    inputEdit_->installEventFilter(this);
     sendButton_ = new QPushButton("发送", this);
     sendButton_->setProperty("variant", "primary");
     sendButton_->setMinimumWidth(92);
@@ -247,36 +251,26 @@ a { color: #1b7f4f; text-decoration: none; }
 
     // 点击发送
     connect(sendButton_, &QPushButton::clicked, this, [this]() {
-        auto text = inputEdit_->toPlainText().trimmed();
-        if (text.isEmpty()) {
-            UiNotifier::info(this, "请输入问题");
-            return;
-        }
-        // 如果当前还没有会话，就先创建一个
-        if (currentSessionId_.isEmpty()) {
-            if (!createNewSession()) {
-                return;
-            }
-        }
-        // 先在聊天区显示用户消息
-        appendChatMessageToView("user", text);
-        // 把用户消息保存到本地数据库
-        if (!saveMessageToLocal("user", text)) {
-            UiNotifier::warning(this, "提示", "用户消息保存失败");
-        }
-        inputEdit_->clear();
-        // 重置当前 AI 流式缓存
-        currentAiMessageBuffer_.clear();
-        // 发送网络请求
-        // sendChatRequest(text);
-        // 发送 SSE 流式请求
-        sendChatStreamRequest(text);
+        submitInputMessage();
     });
 }
 
 void MainWindow::resizeEvent(QResizeEvent *event) {
     QMainWindow::resizeEvent(event);
     updateResponsivePanels();
+}
+
+bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
+    if (watched == inputEdit_ && event && event->type() == QEvent::KeyPress) {
+        auto *keyEvent = static_cast<QKeyEvent *>(event);
+        const bool isEnter = keyEvent->key() == Qt::Key_Return || keyEvent->key() == Qt::Key_Enter;
+        const bool shiftPressed = keyEvent->modifiers().testFlag(Qt::ShiftModifier);
+        if (isEnter && !shiftPressed) {
+            submitInputMessage();
+            return true;
+        }
+    }
+    return QMainWindow::eventFilter(watched, event);
 }
 
 void MainWindow::updateResponsivePanels() {
@@ -290,7 +284,7 @@ void MainWindow::updateResponsivePanels() {
     }
 
     int leftWidth = std::clamp(totalWidth * 18 / 100, 120, 220);
-    int rightWidth = std::clamp(totalWidth * 24 / 100, 140, 320);
+    int rightWidth = std::clamp(totalWidth * 35 / 100, 400, 520);
     int centerWidth = totalWidth - leftWidth - rightWidth;
 
     if (centerWidth < 320) {
@@ -310,6 +304,35 @@ void MainWindow::updateResponsivePanels() {
     }
 
     mainSplitter_->setSizes({leftWidth, centerWidth, rightWidth});
+}
+
+void MainWindow::submitInputMessage() {
+    if (!inputEdit_) {
+        return;
+    }
+
+    auto text = inputEdit_->toPlainText().trimmed();
+    if (text.isEmpty()) {
+        UiNotifier::info(this, "请输入问题");
+        return;
+    }
+    // 如果当前还没有会话，就先创建一个
+    if (currentSessionId_.isEmpty()) {
+        if (!createNewSession()) {
+            return;
+        }
+    }
+    // 先在聊天区显示用户消息
+    appendChatMessageToView("user", text);
+    // 把用户消息保存到本地数据库
+    if (!saveMessageToLocal("user", text)) {
+        UiNotifier::warning(this, "提示", "用户消息保存失败");
+    }
+    inputEdit_->clear();
+    // 重置当前 AI 流式缓存
+    currentAiMessageBuffer_.clear();
+    // 发送 SSE 流式请求
+    sendChatStreamRequest(text);
 }
 
 void MainWindow::showChatContextMenu(const QPoint &pos) {
