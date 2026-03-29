@@ -7,6 +7,7 @@
 #include <boost/beast/http.hpp>
 #include <string>
 #include <memory>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -46,8 +47,20 @@ private:
     // 接收新的 TCP 连接。
     void do_accept_loop();
 
-    // 读取单个连接上的 HTTP 请求并返回响应。
+    // 读取单个连接上的 HTTP 请求；这里只做收包和路由前置，不在这里执行慢业务。
     void handle_connection(boost::asio::ip::tcp::socket socket);
+
+    // 按请求类型把业务处理投递到合适的执行器，避免 HTTP worker 被慢任务长期占满。
+    // 这里会把 socket 和已读完的请求对象一起 move 到目标线程池。
+    void dispatch_request(boost::asio::ip::tcp::socket socket,
+                          Request req,
+                          const HttpRouter::RouteMatch &matched_route);
+
+    // 真正执行路由处理并负责写回响应；可能运行在 HTTP worker 或专用后台线程池里。
+    // 普通 JSON 路由和 SSE 路由都会在这里汇合，便于统一处理写回和连接关闭逻辑。
+    void handle_request(boost::asio::ip::tcp::socket socket,
+                        Request req,
+                        const HttpRouter::RouteMatch &matched_route);
 
     // 对未匹配路由的请求生成统一错误响应。
     Response make_route_error_response(const Request &req);
@@ -94,8 +107,12 @@ private:
     unsigned short port_;
 
     boost::asio::io_context ioc_;
-    // worker 线程池
-    boost::asio::thread_pool worker_pool_;
+    // HTTP worker 只负责收包、解析和快速分发，尽快把连接交给专用执行器。
+    boost::asio::thread_pool http_worker_pool_;
+    // chat / retrieve / stream 这类强依赖上游模型响应的慢请求，统一放到独立执行器。
+    boost::asio::thread_pool upstream_worker_pool_;
+    // 文档上传、重建 embedding 这类重 CPU + 重 I/O 任务，避免与 chat 互相抢占。
+    boost::asio::thread_pool document_worker_pool_;
     std::size_t worker_threads_{0};
     std::mutex db_mutex_;
 

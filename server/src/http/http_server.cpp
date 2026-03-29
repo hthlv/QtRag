@@ -19,6 +19,7 @@
 #include "utils/logger.h"
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
+#include <algorithm>
 #include <sstream>
 #include <chrono>
 #include <cctype>
@@ -93,6 +94,36 @@ namespace {
     bool starts_with(const std::string &text, const std::string &prefix) {
         return text.size() >= prefix.size() &&
                text.compare(0, prefix.size(), prefix) == 0;
+    }
+
+    // 路由分发前先去掉 query string，避免 `/api/v1/chat?a=1` 被误判为另一条路径。
+    std::string normalize_target(boost::beast::string_view target) {
+        const std::size_t query_pos = target.find('?');
+        if (query_pos == boost::beast::string_view::npos) {
+            return std::string(target);
+        }
+        return std::string(target.substr(0, query_pos));
+    }
+
+    // 这类请求主要耗时在上游 embedding / LLM 网络调用，适合放到独立执行器。
+    bool is_upstream_bound_route(const HttpRouter::RouteMatch &matched_route,
+                                 const std::string &path) {
+        if (!matched_route.found) {
+            return false;
+        }
+        if (matched_route.type == HttpRouter::RouteType::Stream) {
+            return true;
+        }
+        return path == "/api/v1/chat" || path == "/api/v1/retrieve";
+    }
+
+    // 文档处理链路包含切片、embedding、数据库写入，持续时间通常比普通接口长很多。
+    bool is_document_background_route(const HttpRouter::RouteMatch &matched_route,
+                                      const std::string &path) {
+        if (!matched_route.found || matched_route.type != HttpRouter::RouteType::Json) {
+            return false;
+        }
+        return path == "/api/v1/docs/upload" || path == "/api/v1/embeddings/regenerate";
     }
 
     ErrorInfo classify_internal_error(const std::exception &ex) {
@@ -447,8 +478,10 @@ HttpServer::HttpServer(const AppConfig &config, sqlite3 *db)
     : address_(config.server.listen_address),
       port_(config.server.listen_port),
       ioc_(1),
-      worker_pool_(config.server.worker_threads),
-      worker_threads_(config.server.worker_threads),
+      http_worker_pool_(std::max<std::size_t>(1, config.server.worker_threads)),
+      upstream_worker_pool_(std::max<std::size_t>(1, config.server.worker_threads)),
+      document_worker_pool_(std::max<std::size_t>(1, config.server.worker_threads)),
+      worker_threads_(std::max<std::size_t>(1, config.server.worker_threads)),
       db_(db),
       embedding_client_(create_embedding_client(config)),
       vector_store_(std::make_unique<InMemoryVectorStore>()),
@@ -477,7 +510,9 @@ void HttpServer::run() {
     log_info("http", oss.str());
 
     do_accept_loop();
-    worker_pool_.join();
+    http_worker_pool_.join();
+    upstream_worker_pool_.join();
+    document_worker_pool_.join();
 }
 
 void HttpServer::initialize_index_from_storage() {
@@ -552,11 +587,10 @@ void HttpServer::do_accept_loop() {
     for (;;) {
         tcp::socket socket{ioc_};
         acceptor.accept(socket);
-        // accept 线程只负责接收连接，真正的请求处理放进 worker 线程池执行
-        asio::post(worker_pool_, [this, socket = std::move(socket)]() mutable {
+        // accept 线程只负责接收连接；HTTP worker 先读请求头体，再把慢任务转交给专用执行器。
+        asio::post(http_worker_pool_, [this, socket = std::move(socket)]() mutable {
             handle_connection(std::move(socket));
         });
-        // handle_connection(std::move(socket));
     }
 }
 
@@ -573,7 +607,46 @@ void HttpServer::handle_connection(tcp::socket socket) {
 
         // 所有接口都先经过 router 做 method + path 匹配。
         const auto matched_route = router_.match(req.method(), req.target());
+        dispatch_request(std::move(socket), std::move(req), matched_route);
+    } catch (const std::exception &ex) {
+        std::ostringstream oss;
+        oss << "Connection handling failed: " << ex.what();
+        log_error("http", oss.str());
+    }
+}
+
+void HttpServer::dispatch_request(tcp::socket socket,
+                                  Request req,
+                                  const HttpRouter::RouteMatch &matched_route) {
+    // 请求体已经在 HTTP worker 中完整读入，这里可以安全地把 socket + req 一起 move 到别的线程池。
+    const std::string path = normalize_target(req.target());
+
+    if (is_upstream_bound_route(matched_route, path)) {
+        // 对话、检索、SSE 会长时间阻塞在模型调用上，必须尽快让 HTTP worker 返回收包。
+        asio::post(upstream_worker_pool_,
+                   [this, socket = std::move(socket), req = std::move(req), matched_route]() mutable {
+                       handle_request(std::move(socket), std::move(req), matched_route);
+                   });
+        return;
+    }
+
+    if (is_document_background_route(matched_route, path)) {
+        // 文档切片、embedding 和落库持续时间更长，独立出来避免挤占聊天请求吞吐。
+        asio::post(document_worker_pool_,
+                   [this, socket = std::move(socket), req = std::move(req), matched_route]() mutable {
+                       handle_request(std::move(socket), std::move(req), matched_route);
+                   });
+        return;
+    }
+    handle_request(std::move(socket), std::move(req), matched_route);
+}
+
+void HttpServer::handle_request(tcp::socket socket,
+                                Request req,
+                                const HttpRouter::RouteMatch &matched_route) {
+    try {
         if (matched_route.found && matched_route.type == HttpRouter::RouteType::Stream) {
+            // 流式接口由 handler 直接持续写 socket，因此这里不能先构造普通 JSON Response。
             matched_route.stream_handler(socket, req);
             beast::error_code ec;
             socket.shutdown(tcp::socket::shutdown_send, ec);
@@ -590,7 +663,7 @@ void HttpServer::handle_connection(tcp::socket socket) {
         socket.shutdown(tcp::socket::shutdown_send, ec);
     } catch (const std::exception &ex) {
         std::ostringstream oss;
-        oss << "Connection handling failed: " << ex.what();
+        oss << "Request execution failed: " << ex.what();
         log_error("http", oss.str());
     }
 }
