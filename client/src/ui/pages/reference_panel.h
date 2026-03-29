@@ -4,6 +4,7 @@
 
 #pragma once
 #include <QWidget>
+#include <QPoint>
 #ifdef QTRAG_CLIENT_HAS_WEBENGINE
 class QWebEngineView;
 #else
@@ -20,6 +21,9 @@ public:
     void setReferences(const QJsonArray &refs);
 
     void clearReferences();
+
+    // 引用区右键菜单只保留复制。
+    void showCopyContextMenu(const QPoint &pos);
 
 private:
 #ifdef QTRAG_CLIENT_HAS_WEBENGINE

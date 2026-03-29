@@ -125,11 +125,14 @@ void MainWindow::setupUi() {
 #ifdef QTRAG_CLIENT_HAS_WEBENGINE
     chatView_ = new QWebEngineView(this);
     chatView_->setObjectName("ChatView");
-    // 聊天区不需要浏览器默认右键菜单，避免暴露无关操作。
-    chatView_->setContextMenuPolicy(Qt::NoContextMenu);
+    // 聊天区改成自定义右键菜单，只暴露复制动作。
+    chatView_->setContextMenuPolicy(Qt::CustomContextMenu);
     // 允许本地 HTML 页面加载 CDN 的 KaTeX/marked 资源。
     chatView_->settings()->setAttribute(QWebEngineSettings::LocalContentCanAccessRemoteUrls, true);
     chatViewReady_ = false;
+    connect(chatView_, &QWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
+        showChatContextMenu(pos);
+    });
     connect(chatView_, &QWebEngineView::loadFinished, this, [this](bool ok) {
         chatViewReady_ = ok;
         if (ok) {
@@ -143,6 +146,12 @@ void MainWindow::setupUi() {
     chatView_ = new QTextEdit(this);
     chatView_->setObjectName("ChatView");
     chatView_->setReadOnly(true);
+    // 回退文本控件显式允许鼠标选中与键盘复制，避免不同 Qt 版本默认行为不一致。
+    chatView_->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard | Qt::LinksAccessibleByMouse);
+    chatView_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(chatView_, &QWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
+        showChatContextMenu(pos);
+    });
     chatView_->setPlaceholderText("这里显示聊天记录...");
     chatView_->document()->setDefaultStyleSheet(QString::fromUtf8(R"(
 p { margin: 0 0 8px 0; }
@@ -301,6 +310,36 @@ void MainWindow::updateResponsivePanels() {
     }
 
     mainSplitter_->setSizes({leftWidth, centerWidth, rightWidth});
+}
+
+void MainWindow::showChatContextMenu(const QPoint &pos) {
+    if (!chatView_) {
+        return;
+    }
+
+#ifdef QTRAG_CLIENT_HAS_WEBENGINE
+    const bool hasSelection = !chatView_->page()->selectedText().isEmpty();
+#else
+    const bool hasSelection = chatView_->textCursor().hasSelection();
+#endif
+    // 没有选中文本时不弹出菜单，避免空菜单影响观感。
+    if (!hasSelection) {
+        return;
+    }
+
+    QMenu menu(this);
+    QAction *copyAction = menu.addAction(QString::fromUtf8("复制"));
+#ifdef QTRAG_CLIENT_HAS_WEBENGINE
+    connect(copyAction, &QAction::triggered, this, [this]() {
+        if (chatView_) {
+            chatView_->triggerPageAction(QWebEnginePage::Copy);
+        }
+    });
+    menu.exec(chatView_->mapToGlobal(pos));
+#else
+    connect(copyAction, &QAction::triggered, chatView_, &QTextEdit::copy);
+    menu.exec(chatView_->viewport()->mapToGlobal(pos));
+#endif
 }
 
 void MainWindow::setupMenu() {
@@ -839,6 +878,8 @@ QString MainWindow::buildChatPageHtml() const {
       color: var(--wx-text);
       font-family: "PingFang SC","Microsoft YaHei UI","Noto Sans CJK SC",sans-serif;
       line-height: 1.5;
+      user-select: text;
+      -webkit-user-select: text;
     }
     .chat-row {
       width: 100%;
@@ -885,6 +926,8 @@ QString MainWindow::buildChatPageHtml() const {
       box-shadow: 0 1px 2px rgba(0,0,0,0.06);
       min-width: 0;
       overflow: hidden;
+      user-select: text;
+      -webkit-user-select: text;
     }
     .bubble.user { background: var(--wx-user); border-color: #7fd257; }
     .bubble.assistant { background: var(--wx-ai); border-color: var(--wx-border); }

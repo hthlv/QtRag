@@ -112,6 +112,9 @@ private:
 
     void updateResponsivePanels();
 
+    // 聊天区右键菜单只保留复制，避免出现浏览器默认动作。
+    void showChatContextMenu(const QPoint &pos);
+
 protected:
     void resizeEvent(QResizeEvent *event) override;
 

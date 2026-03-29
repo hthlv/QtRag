@@ -8,6 +8,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QMenu>
 #include <QSizePolicy>
 #include <QVBoxLayout>
 #ifdef QTRAG_CLIENT_HAS_WEBENGINE
@@ -39,11 +40,14 @@ ReferencePanel::ReferencePanel(QWidget *parent)
 #ifdef QTRAG_CLIENT_HAS_WEBENGINE
     referenceView_ = new QWebEngineView(this);
     referenceView_->setObjectName("ReferenceView");
-    // 引用区同样关闭默认右键菜单，只保留业务展示能力。
-    referenceView_->setContextMenuPolicy(Qt::NoContextMenu);
+    // 引用区改成自定义右键菜单，只暴露复制动作。
+    referenceView_->setContextMenuPolicy(Qt::CustomContextMenu);
     // 允许本地页面访问 CDN，加载 marked 与 KaTeX 资源。
     referenceView_->settings()->setAttribute(QWebEngineSettings::LocalContentCanAccessRemoteUrls, true);
     referenceViewReady_ = false;
+    connect(referenceView_, &QWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
+        showCopyContextMenu(pos);
+    });
     connect(referenceView_, &QWebEngineView::loadFinished, this, [this](bool ok) {
         referenceViewReady_ = ok;
         if (ok) {
@@ -57,6 +61,12 @@ ReferencePanel::ReferencePanel(QWidget *parent)
     referenceView_ = new QTextBrowser(this);
     referenceView_->setObjectName("ReferenceView");
     referenceView_->setReadOnly(true);
+    // 回退控件显式打开文本选择与链接点击，保证右键复制可用。
+    referenceView_->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard | Qt::LinksAccessibleByMouse);
+    referenceView_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(referenceView_, &QWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
+        showCopyContextMenu(pos);
+    });
     referenceView_->setOpenExternalLinks(true);
     referenceView_->setFrameShape(QFrame::NoFrame);
     referenceView_->document()->setDefaultStyleSheet(QString::fromUtf8(R"(
@@ -174,6 +184,36 @@ void ReferencePanel::clearReferences() {
 #endif
 }
 
+void ReferencePanel::showCopyContextMenu(const QPoint &pos) {
+    if (!referenceView_) {
+        return;
+    }
+
+#ifdef QTRAG_CLIENT_HAS_WEBENGINE
+    const bool hasSelection = !referenceView_->page()->selectedText().isEmpty();
+#else
+    const bool hasSelection = referenceView_->textCursor().hasSelection();
+#endif
+    // 只有真的选中了引用文本时才显示复制菜单。
+    if (!hasSelection) {
+        return;
+    }
+
+    QMenu menu(this);
+    QAction *copyAction = menu.addAction(QString::fromUtf8("复制"));
+#ifdef QTRAG_CLIENT_HAS_WEBENGINE
+    connect(copyAction, &QAction::triggered, this, [this]() {
+        if (referenceView_) {
+            referenceView_->triggerPageAction(QWebEnginePage::Copy);
+        }
+    });
+    menu.exec(referenceView_->mapToGlobal(pos));
+#else
+    connect(copyAction, &QAction::triggered, referenceView_, &QTextBrowser::copy);
+    menu.exec(referenceView_->viewport()->mapToGlobal(pos));
+#endif
+}
+
 #ifdef QTRAG_CLIENT_HAS_WEBENGINE
 QString ReferencePanel::buildReferencePageHtml() const {
     // 页面内统一做：Markdown 解析、表格样式、KaTeX 公式渲染。
@@ -203,6 +243,8 @@ QString ReferencePanel::buildReferencePageHtml() const {
       color: var(--text);
       font-family: "PingFang SC","Microsoft YaHei UI","Noto Sans CJK SC",sans-serif;
       line-height: 1.5;
+      user-select: text;
+      -webkit-user-select: text;
     }
     .empty {
       min-height: 180px;
@@ -236,6 +278,8 @@ QString ReferencePanel::buildReferencePageHtml() const {
       border-radius: 8px;
       background: var(--card-bg);
       padding: 10px;
+      user-select: text;
+      -webkit-user-select: text;
     }
     .ref-head {
       display: flex;
