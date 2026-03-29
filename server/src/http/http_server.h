@@ -7,6 +7,8 @@
 #include <boost/beast/http.hpp>
 #include <string>
 #include <memory>
+#include <unordered_map>
+#include <vector>
 
 #include "config/app_config.h"
 #include "router.h"
@@ -59,6 +61,9 @@ private:
     // 处理获取文档列表
     Response handle_list_documents(const Request &req);
 
+    // 返回当前可选聊天模型列表。
+    Response handle_list_models(const Request &req);
+
     // 检索接口
     Response handle_retrieve(const Request &req);
 
@@ -74,6 +79,9 @@ private:
     // 返回错误响应
     Response make_error_response(unsigned version, boost::beast::http::status status, unsigned code,
                                  const std::string &message);
+
+    // 解析当前请求使用的 LLM；未指定时回退到默认模型。
+    const LLMClient *resolve_llm_client(const Request &req, std::string *resolved_llm_id) const;
 
 private:
     // 监听绑定的 IP 地址字符串。
@@ -95,7 +103,9 @@ private:
     std::unique_ptr<Retriever> retriever_;
     // prompt 与 LLM
     std::unique_ptr<PromptBuilder> prompt_builder_;
-    std::unique_ptr<LLMClient> llm_client_;
+    std::unordered_map<std::string, std::unique_ptr<LLMClient>> llm_clients_;
+    std::vector<LlmOptionConfig> llm_options_;
+    std::string default_llm_id_;
     // 独立 router，负责 method + path 到 handler 的映射关系。
     HttpRouter router_;
 };

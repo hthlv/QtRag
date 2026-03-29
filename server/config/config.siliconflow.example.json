@@ -10,16 +10,52 @@
     "timeout_ms": 60000
   },
   "models": {
-    "chat": "Qwen/Qwen2.5-7B-Instruct",
     "embedding": "BAAI/bge-large-zh-v1.5"
   },
   "openai": {
     "api_key_env": "SILICONFLOW_API_KEY",
-    "chat_api": "chat_completions",
     "organization": "",
     "project": "",
-    "store": false,
-    "reasoning_effort": "",
-    "embedding_dimensions": 0
-  }
+    "embedding_dimensions": 1024
+  },
+  "llm_options": [
+    {
+      "id": "qwen-2.5-7b",
+      "label": "Qwen 2.5 7B",
+      "default": true,
+      "provider": {
+        "type": "openai",
+        "base_url": "https://api.siliconflow.cn",
+        "timeout_ms": 60000
+      },
+      "model": "Qwen/Qwen2.5-7B-Instruct",
+      "openai": {
+        "api_key_env": "SILICONFLOW_API_KEY",
+        "chat_api": "chat_completions",
+        "organization": "",
+        "project": "",
+        "store": false,
+        "reasoning_effort": "low"
+      }
+    },
+    {
+      "id": "deepseek-v3",
+      "label": "DeepSeek V3",
+      "default": false,
+      "provider": {
+        "type": "openai",
+        "base_url": "https://api.siliconflow.cn",
+        "timeout_ms": 60000
+      },
+      "model": "deepseek-ai/DeepSeek-V3",
+      "openai": {
+        "api_key_env": "SILICONFLOW_API_KEY",
+        "chat_api": "chat_completions",
+        "organization": "",
+        "project": "",
+        "store": false,
+        "reasoning_effort": "low"
+      }
+    }
+  ]
 }

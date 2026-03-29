@@ -10,16 +10,52 @@
     "timeout_ms": 60000
   },
   "models": {
-    "chat": "gpt-5.4-mini",
     "embedding": "text-embedding-3-small"
   },
   "openai": {
     "api_key_env": "OPENAI_API_KEY",
-    "chat_api": "responses",
     "organization": "",
     "project": "",
-    "store": false,
-    "reasoning_effort": "low",
     "embedding_dimensions": 1536
-  }
+  },
+  "llm_options": [
+    {
+      "id": "gpt-5.4-mini",
+      "label": "GPT-5.4 Mini",
+      "default": true,
+      "provider": {
+        "type": "openai",
+        "base_url": "https://api.openai.com",
+        "timeout_ms": 60000
+      },
+      "model": "gpt-5.4-mini",
+      "openai": {
+        "api_key_env": "OPENAI_API_KEY",
+        "chat_api": "responses",
+        "organization": "",
+        "project": "",
+        "store": false,
+        "reasoning_effort": "low"
+      }
+    },
+    {
+      "id": "gpt-5.4",
+      "label": "GPT-5.4",
+      "default": false,
+      "provider": {
+        "type": "openai",
+        "base_url": "https://api.openai.com",
+        "timeout_ms": 60000
+      },
+      "model": "gpt-5.4",
+      "openai": {
+        "api_key_env": "OPENAI_API_KEY",
+        "chat_api": "responses",
+        "organization": "",
+        "project": "",
+        "store": false,
+        "reasoning_effort": "medium"
+      }
+    }
+  ]
 }

@@ -107,6 +107,68 @@ namespace {
         }
         return read_bool_or_default(root, legacy_key, default_value);
     }
+
+    std::vector<LlmOptionConfig> read_llm_options(const nlohmann::json &root,
+                                                  const ProviderConfig &default_provider,
+                                                  const OpenAIConfig &default_openai,
+                                                  std::string *default_llm_id) {
+        std::vector<LlmOptionConfig> options;
+        if (!root.contains("llm_options") || !root.at("llm_options").is_array()) {
+            return options;
+        }
+
+        const auto &items = root.at("llm_options");
+        options.reserve(items.size());
+        bool has_explicit_default = false;
+        for (std::size_t i = 0; i < items.size(); ++i) {
+            // 跳过非法项，避免因为单条配置错误导致整体启动失败。
+            if (!items.at(i).is_object()) {
+                continue;
+            }
+            const auto &item = items.at(i);
+            const nlohmann::json provider_json = read_object_or_empty(item, "provider");
+            const nlohmann::json openai_json = read_object_or_empty(item, "openai");
+
+            LlmOptionConfig option;
+            option.id = read_string_or_default(item, "id", "llm_" + std::to_string(i));
+            option.label = read_string_or_default(item, "label", option.id);
+            option.model = read_string_or_default(item, "model", "");
+            option.is_default = read_bool_or_default(item, "default", false);
+            if (option.model.empty()) {
+                continue;
+            }
+
+            option.provider = default_provider;
+            option.provider.type = read_string_or_default(provider_json, "type", default_provider.type);
+            option.provider.base_url = read_string_or_default(provider_json, "base_url", default_provider.base_url);
+            option.provider.timeout_ms = read_int_or_default(provider_json, "timeout_ms", default_provider.timeout_ms);
+
+            // OpenAI 私有参数允许在每个模型上单独覆盖。
+            option.openai = default_openai;
+            option.openai.api_key_env = read_string_or_default(openai_json, "api_key_env", default_openai.api_key_env);
+            option.openai.chat_api = read_string_or_default(openai_json, "chat_api", default_openai.chat_api);
+            option.openai.organization = read_string_or_default(openai_json, "organization", default_openai.organization);
+            option.openai.project = read_string_or_default(openai_json, "project", default_openai.project);
+            option.openai.store = read_bool_or_default(openai_json, "store", default_openai.store);
+            option.openai.reasoning_effort = read_string_or_default(
+                openai_json, "reasoning_effort", default_openai.reasoning_effort);
+            option.openai.embedding_dimensions = read_int_or_default(
+                openai_json, "embedding_dimensions", default_openai.embedding_dimensions);
+
+            if (option.is_default && !has_explicit_default) {
+                *default_llm_id = option.id;
+                has_explicit_default = true;
+            }
+            options.push_back(std::move(option));
+        }
+
+        if (!has_explicit_default) {
+            // 没有显式 default 时，按列表第一项作为默认模型。
+            options.front().is_default = true;
+            *default_llm_id = options.front().id;
+        }
+        return options;
+    }
 }
 
 AppConfig AppConfig::load_from_file(const std::string &path) {
@@ -149,9 +211,7 @@ AppConfig AppConfig::load_from_file(const std::string &path) {
         cfg.provider.base_url = "http://" + legacy_provider_host + ":" + legacy_provider_port;
     }
 
-    // 模型名属于公共模型层，不再散落在顶层。
-    cfg.models.chat = read_string_with_legacy_fallback(
-        models_json, "chat", j, "chat_model", cfg.models.chat);
+    // embedding 模型继续保留在公共模型层。
     cfg.models.embedding = read_string_with_legacy_fallback(
         models_json, "embedding", j, "embedding_model", cfg.models.embedding);
 
@@ -171,5 +231,9 @@ AppConfig AppConfig::load_from_file(const std::string &path) {
     // 0 表示不显式指定维度，交给上游模型默认值处理。
     cfg.openai.embedding_dimensions = read_int_with_legacy_fallback(
         openai_json, "embedding_dimensions", j, "openai_embedding_dimensions", cfg.openai.embedding_dimensions);
+    cfg.llm_options = read_llm_options(j, cfg.provider, cfg.openai, &cfg.default_llm_id);
+    if (cfg.llm_options.empty()) {
+        throw std::runtime_error("llm_options must contain at least one valid chat model");
+    }
     return cfg;
 }

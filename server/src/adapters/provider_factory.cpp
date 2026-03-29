@@ -46,9 +46,9 @@ namespace {
     }
 
     // 如果当前构建没有 OpenSSL，就提前阻止 https provider 启动，避免运行时才失败。
-    void validate_transport_support(const AppConfig &config) {
+    void validate_transport_support(const ProviderConfig &config) {
 #ifndef QTRAG_SERVER_HAS_OPENSSL
-        if (starts_with(to_lower_copy(config.provider.base_url), "https://")) {
+        if (starts_with(to_lower_copy(config.base_url), "https://")) {
             throw std::runtime_error("https upstream requires OpenSSL support at build time");
         }
 #else
@@ -69,7 +69,7 @@ std::unique_ptr<EmbeddingClient> create_embedding_client(const AppConfig &config
     }
     if (provider_type == "openai") {
         // OpenAI 在创建阶段就校验 HTTPS 支持和 API Key。
-        validate_transport_support(config);
+        validate_transport_support(config.provider);
         return std::make_unique<OpenAIEmbeddingClient>(
             config.provider.base_url,
             read_required_env(config.openai.api_key_env),
@@ -82,23 +82,24 @@ std::unique_ptr<EmbeddingClient> create_embedding_client(const AppConfig &config
     throw std::invalid_argument("unsupported provider type: " + config.provider.type);
 }
 
-std::unique_ptr<LLMClient> create_llm_client(const AppConfig &config) {
+std::unique_ptr<LLMClient> create_llm_client(const LlmOptionConfig &config) {
+    // 聊天模型统一按 llm_options 中的单项配置创建，避免再依赖旧单模型入口。
     // LLM provider 的选择逻辑和 embedding 保持一致，方便后续继续扩展。
     const std::string provider_type = to_lower_copy(config.provider.type);
     if (provider_type == "ollama") {
         // 现有聊天能力默认仍兼容 Ollama。
         return std::make_unique<OllamaLLMClient>(
             config.provider.base_url,
-            config.models.chat,
+            config.model,
             config.provider.timeout_ms);
     }
     if (provider_type == "openai") {
         // OpenAI 聊天 provider 会自动读取组织、项目和 reasoning 配置。
-        validate_transport_support(config);
+        validate_transport_support(config.provider);
         return std::make_unique<OpenAILLMClient>(
             config.provider.base_url,
             read_required_env(config.openai.api_key_env),
-            config.models.chat,
+            config.model,
             config.provider.timeout_ms,
             config.openai.chat_api,
             config.openai.store,

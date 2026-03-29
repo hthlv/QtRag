@@ -10,15 +10,30 @@
     "timeout_ms": 30000
   },
   "models": {
-    "chat": "qwen2.5:7b",
     "embedding": "nomic-embed-text:latest"
   },
-  "openai": {
-    "api_key_env": "OPENAI_API_KEY",
-    "organization": "",
-    "project": "",
-    "store": false,
-    "reasoning_effort": "",
-    "embedding_dimensions": 0
-  }
+  "llm_options": [
+    {
+      "id": "qwen2.5-7b",
+      "label": "Qwen 2.5 7B",
+      "default": true,
+      "provider": {
+        "type": "ollama",
+        "base_url": "http://127.0.0.1:11434",
+        "timeout_ms": 30000
+      },
+      "model": "qwen2.5:7b"
+    },
+    {
+      "id": "qwen2.5-14b",
+      "label": "Qwen 2.5 14B",
+      "default": false,
+      "provider": {
+        "type": "ollama",
+        "base_url": "http://127.0.0.1:11434",
+        "timeout_ms": 30000
+      },
+      "model": "qwen2.5:14b"
+    }
+  ]
 }

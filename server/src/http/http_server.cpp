@@ -380,6 +380,30 @@ namespace {
         return oss.str();
     }
 
+    // 把服务端可用聊天模型列表拼成 JSON，供客户端设置页选择。
+    std::string build_model_list_json(const std::vector<LlmOptionConfig> &options,
+                                      const std::string &default_llm_id) {
+        std::ostringstream oss;
+        oss << "{"
+            << R"("default_llm_id":")" << escape_json(default_llm_id) << "\","
+            << R"("items":[)";
+        for (std::size_t i = 0; i < options.size(); ++i) {
+            const auto &item = options[i];
+            if (i > 0) {
+                oss << ",";
+            }
+            oss << "{"
+                << R"("id":")" << escape_json(item.id) << "\","
+                << R"("label":")" << escape_json(item.label) << "\","
+                << R"("provider_type":")" << escape_json(item.provider.type) << "\","
+                << R"("model":")" << escape_json(item.model) << "\","
+                << R"("is_default":)" << (item.id == default_llm_id ? "true" : "false")
+                << "}";
+        }
+        oss << "]}";
+        return oss.str();
+    }
+
     // 写 SSE 响应头
     void write_sse_headers(tcp::socket &socket, unsigned version) {
         http::response<http::empty_body> res{http::status::ok, version};
@@ -429,7 +453,12 @@ HttpServer::HttpServer(const AppConfig &config, sqlite3 *db)
           db,
           &db_mutex_)),
       prompt_builder_(std::make_unique<PromptBuilder>()),
-      llm_client_(create_llm_client(config)) {
+      llm_options_(config.llm_options),
+      default_llm_id_(config.default_llm_id) {
+    // 启动时一次性构建所有可选 LLM 实例，运行中按请求头快速路由。
+    for (const auto &option : llm_options_) {
+        llm_clients_.emplace(option.id, create_llm_client(option));
+    }
     // 构造完成后统一注册所有 HTTP 路由，后续扩展接口时只需要改这里。
     register_routes();
 }
@@ -481,6 +510,9 @@ void HttpServer::register_routes() {
     // 文档接口。
     router_.add_json_route(http::verb::get, "/api/v1/docs", [this](const Request &req) {
         return handle_list_documents(req);
+    });
+    router_.add_json_route(http::verb::get, "/api/v1/models", [this](const Request &req) {
+        return handle_list_models(req);
     });
     router_.add_json_route(http::verb::post, "/api/v1/docs/upload", [this](const Request &req) {
         return handle_upload_document(req);
@@ -742,6 +774,30 @@ HttpServer::Response HttpServer::handle_list_documents(const Request &req) {
     }
 }
 
+HttpServer::Response HttpServer::handle_list_models(const Request &req) {
+    // 给客户端返回“可选模型 + 默认模型”，供设置页展示和切换。
+    return make_json_response(
+        req.version(),
+        http::status::ok,
+        build_model_list_json(llm_options_, default_llm_id_));
+}
+
+const LLMClient *HttpServer::resolve_llm_client(const Request &req, std::string *resolved_llm_id) const {
+    // 支持客户端通过 X-LLM-Id 指定模型；未指定时回退到服务端默认模型。
+    std::string llm_id = get_header_value(req, "X-LLM-Id");
+    if (llm_id.empty()) {
+        llm_id = default_llm_id_;
+    }
+    const auto it = llm_clients_.find(llm_id);
+    if (it == llm_clients_.end()) {
+        return nullptr;
+    }
+    if (resolved_llm_id) {
+        *resolved_llm_id = llm_id;
+    }
+    return it->second.get();
+}
+
 HttpServer::Response HttpServer::handle_retrieve(const Request &req) {
     // 1. 请求体直接就是 query 文本
     // 2. 可选请求头 X-Top-K 指定返回数量
@@ -777,6 +833,8 @@ HttpServer::Response HttpServer::handle_chat(const Request &req) {
     // 2. X-Top-K 指定检索数量，默认 3
     const std::string query = req.body();
     const std::size_t top_k = parse_top_k(req, 3);
+    std::string llm_id;
+    const LLMClient *llm_client = resolve_llm_client(req, &llm_id);
     // 空 query 直接返回 400
     if (query.empty()) {
         return make_error_response(
@@ -785,13 +843,21 @@ HttpServer::Response HttpServer::handle_chat(const Request &req) {
             kErrorInvalidParameter,
             "empty query");
     }
+    if (!llm_client) {
+        // 客户端传了不存在的模型 ID，直接返回参数错误。
+        return make_error_response(
+            req.version(),
+            http::status::bad_request,
+            kErrorInvalidParameter,
+            "unknown llm id");
+    }
     try {
         // 1. 检索知识库中的相关片段
         auto refs = retriever_->retrieve(query, top_k);
         // 2. 构造 prompt
         std::string prompt = prompt_builder_->build(query, refs);
         // 3. 调用LLM生成回答
-        std::string answer = llm_client_->generate(query, refs, prompt);
+        std::string answer = llm_client->generate(query, refs, prompt);
         // 4. 返回 answer + reference
         return make_json_response(
             req.version(),
@@ -903,6 +969,8 @@ void HttpServer::handle_chat_stream(boost::asio::ip::tcp::socket &socket,
     // 2. X-Top-K 指定检索数量，默认 3
     const std::string query = req.body();
     const std::size_t top_k = parse_top_k(req, 3);
+    std::string llm_id;
+    const LLMClient *llm_client = resolve_llm_client(req, &llm_id);
     bool headers_written = false;
     try {
         // 先写 SSE 响应头
@@ -915,13 +983,20 @@ void HttpServer::handle_chat_stream(boost::asio::ip::tcp::socket &socket,
             write_sse_end(socket);
             return;
         }
+        if (!llm_client) {
+            // SSE 分支同样保持和非流式一致的模型校验逻辑。
+            write_sse_event(socket, "error", build_error_json(kErrorInvalidParameter, "unknown llm id"));
+            write_sse_event(socket, "done", R"({})");
+            write_sse_end(socket);
+            return;
+        }
 
         // 1. 检索知识片段
         auto refs = retriever_->retrieve(query, top_k);
         // 2. 构造 prompt
         std::string prompt = prompt_builder_->build(query, refs);
         // 3. 流式生成回答
-        llm_client_->stream_generate(
+        llm_client->stream_generate(
             query,
             refs,
             prompt,
