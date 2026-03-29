@@ -425,6 +425,10 @@ void MainWindow::sendChatRequest(const QString &query) {
     // X-Top-K 指定检索数量
     request.setHeader(QNetworkRequest::ContentTypeHeader, "text/plain; charset=utf-8");
     request.setRawHeader("X-Top-K", QByteArray::number(topK_));
+    // 仅在用户显式选择模型时下发，空值由服务端默认模型兜底。
+    if (!selectedLlmId_.trimmed().isEmpty()) {
+        request.setRawHeader("X-LLM-Id", selectedLlmId_.trimmed().toUtf8());
+    }
     // 发送中禁止按钮，防止重复点击
     sendButton_->setEnabled(false);
     UiNotifier::info(this, "正在请求服务端...");
@@ -493,6 +497,10 @@ void MainWindow::sendChatStreamRequest(const QString &query) {
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::ContentTypeHeader, "text/plain; charset=utf-8");
     request.setRawHeader("X-Top-K", QByteArray::number(topK_));
+    // 流式接口与非流式保持相同的模型选择语义。
+    if (!selectedLlmId_.trimmed().isEmpty()) {
+        request.setRawHeader("X-LLM-Id", selectedLlmId_.trimmed().toUtf8());
+    }
     sendButton_->setEnabled(false);
     UiNotifier::info(this, "正在流式请求服务端");
     currentReply_ = networkManager_->post(request, query.toUtf8());
@@ -668,6 +676,10 @@ void MainWindow::loadSettingsFromLocal() {
         parsedTopK = 3;
     }
     topK_ = std::clamp(parsedTopK, 1, 20);
+
+    // selected_llm_id 允许为空，表示跟随服务端默认模型。
+    auto selectedLlm = settingsRepo_->getValue("selected_llm_id");
+    selectedLlmId_ = selectedLlm.has_value() ? selectedLlm->trimmed() : QString();
 }
 
 void MainWindow::loadSessionsFromLocal() {

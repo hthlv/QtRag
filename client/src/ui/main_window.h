@@ -10,6 +10,7 @@
 class QListWidget;
 class QResizeEvent;
 class QSplitter;
+class QJsonArray;
 class QTextEdit;
 #ifdef QTRAG_CLIENT_HAS_WEBENGINE
 class QWebEngineView;
@@ -169,4 +170,6 @@ private:
     QString serverBaseUrl_{"http://127.0.0.1:8080"};
     // 当前聊天请求使用的检索 Top-K。
     int topK_{3};
+    // 当前聊天请求使用的 LLM ID；为空时由服务端回退到默认模型。
+    QString selectedLlmId_;
 };
