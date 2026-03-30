@@ -7,21 +7,16 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QColor>
 #include <QLabel>
 #include <QMenu>
 #include <QSizePolicy>
+#include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
-#ifdef QTRAG_CLIENT_HAS_WEBENGINE
 #include <QWebEnginePage>
 #include <QWebEngineSettings>
 #include <QWebEngineView>
-#else
-#include <QFrame>
-#include <QRegularExpression>
-#include <QTextBrowser>
-#include <QTextDocument>
-#include <QtGlobal>
-#endif
 
 ReferencePanel::ReferencePanel(QWidget *parent)
     : QWidget(parent) {
@@ -37,13 +32,14 @@ ReferencePanel::ReferencePanel(QWidget *parent)
     title->setProperty("role", "sectionTitle");
     layout->addWidget(title);
 
-#ifdef QTRAG_CLIENT_HAS_WEBENGINE
     referenceView_ = new QWebEngineView(this);
     referenceView_->setObjectName("ReferenceView");
+    referenceView_->setStyleSheet("background:#f7f7f7;");
     // 引用区改成自定义右键菜单，只暴露复制动作。
     referenceView_->setContextMenuPolicy(Qt::CustomContextMenu);
     // 允许本地页面访问 CDN，加载 marked 与 KaTeX 资源。
     referenceView_->settings()->setAttribute(QWebEngineSettings::LocalContentCanAccessRemoteUrls, true);
+    referenceView_->page()->setBackgroundColor(QColor("#f7f7f7"));
     referenceViewReady_ = false;
     connect(referenceView_, &QWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
         showCopyContextMenu(pos);
@@ -54,69 +50,12 @@ ReferencePanel::ReferencePanel(QWidget *parent)
             renderReferencesJson(pendingRefsJson_);
         }
     });
-    // 先加载固定页面骨架，后续只推送 JSON 数据。
-    referenceView_->setHtml(buildReferencePageHtml(), QUrl("https://qtrag.local/"));
-#else
-    // 回退模式：系统未安装 WebEngine 时，仍然使用 QTextBrowser 展示引用。
-    referenceView_ = new QTextBrowser(this);
-    referenceView_->setObjectName("ReferenceView");
-    referenceView_->setReadOnly(true);
-    // 回退控件显式打开文本选择与链接点击，保证右键复制可用。
-    referenceView_->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard | Qt::LinksAccessibleByMouse);
-    referenceView_->setContextMenuPolicy(Qt::CustomContextMenu);
-    connect(referenceView_, &QWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
-        showCopyContextMenu(pos);
+    // 延后页面加载，让外层 Qt 面板先完成首帧绘制。
+    QTimer::singleShot(0, this, [this]() {
+        if (referenceView_) {
+            referenceView_->setHtml(buildReferencePageHtml(), QUrl("https://qtrag.local/"));
+        }
     });
-    referenceView_->setOpenExternalLinks(true);
-    referenceView_->setFrameShape(QFrame::NoFrame);
-    referenceView_->document()->setDefaultStyleSheet(QString::fromUtf8(R"(
-p { margin: 0 0 8px 0; }
-ul, ol { margin: 4px 0 8px 18px; }
-table.md-table {
-    border-collapse: collapse;
-    margin: 6px 0 10px 0;
-    width: 100%;
-}
-table.md-table th,
-table.md-table td {
-    border: 1px solid #d9d9d9;
-    padding: 6px 8px;
-    text-align: left;
-}
-table.md-table th {
-    background: #f6f6f6;
-    font-weight: 700;
-}
-pre {
-    background: #1f2329;
-    color: #e8edf2;
-    border-radius: 8px;
-    padding: 8px;
-}
-code {
-    background: #eef2f5;
-    border-radius: 4px;
-    padding: 1px 4px;
-    font-family: "JetBrains Mono", "Cascadia Code", "Consolas", monospace;
-}
-.math-inline {
-    background: #eef2f5;
-    border-radius: 4px;
-    padding: 1px 6px;
-    font-family: "Cambria Math", "Times New Roman", serif;
-}
-.math-block {
-    margin: 6px 0 10px 0;
-    padding: 8px 10px;
-    background: #f5f7f8;
-    border-left: 3px solid #07c160;
-    border-radius: 6px;
-    white-space: pre-wrap;
-    font-family: "Cambria Math", "Times New Roman", serif;
-}
-a { color: #1b7f4f; text-decoration: none; }
-)"));
-#endif
 
     layout->addWidget(referenceView_, 1);
     // 构造完成后立即渲染空态，占位区域保持稳定。
@@ -127,61 +66,16 @@ void ReferencePanel::setReferences(const QJsonArray &refs) {
     if (!referenceView_) {
         return;
     }
-#ifdef QTRAG_CLIENT_HAS_WEBENGINE
     pendingRefsJson_ = QString::fromUtf8(QJsonDocument(refs).toJson(QJsonDocument::Compact));
     renderReferencesJson(pendingRefsJson_);
-#else
-    QString html;
-    html += "<div style='padding: 2px 0 6px 0;'>";
-    if (refs.isEmpty()) {
-        html += QString::fromUtf8(R"(
-<div style="min-height:180px; display:flex; align-items:center; justify-content:center; padding:12px 8px;">
-  <div style="width:100%; border:1px dashed #d5d5d5; border-radius:12px; background:#fcfcfc; padding:18px 16px; text-align:center;">
-    <div style="font-size:14px; font-weight:700; color:#3a3a3a; margin-bottom:6px;">引用片段会显示在这里</div>
-    <div style="font-size:12px; color:#8a8a8a; line-height:1.6;">发起一次问答后，命中的文档片段、分数和 Markdown 内容会在右侧展开。</div>
-  </div>
-</div>
-)");
-        html += "</div>";
-        referenceView_->setHtml(html);
-        return;
-    }
-    for (const auto &ref: refs) {
-        const QJsonObject obj = ref.toObject();
-        const QString filename = obj.value("filename").toString();
-        const double score = obj.value("score").toDouble();
-        const QString text = obj.value("text").toString();
-        const QString safeFilename = filename.isEmpty() ? "unknown" : filename.toHtmlEscaped();
-        const QString contentHtml = markdownToHtmlFragment(text);
-
-        html += QString::fromUtf8(R"(
-<div style="margin-bottom:10px; border:1px solid #d8d8d8; border-radius:8px; background:#ffffff; padding:10px;">
-  <div style="font-size:12px; color:#7b7b7b; margin-bottom:6px;">
-    <b style="color:#3d3d3d;">%1</b>
-    <span style="float:right;">score %2</span>
-  </div>
-  <div style="font-size:13px; line-height:1.45; color:#1f1f1f;">%3</div>
-</div>
-)")
-                .arg(safeFilename)
-                .arg(score, 0, 'f', 3)
-                .arg(contentHtml);
-    }
-    html += "</div>";
-    referenceView_->setHtml(html);
-#endif
 }
 
 void ReferencePanel::clearReferences() {
     if (!referenceView_) {
         return;
     }
-#ifdef QTRAG_CLIENT_HAS_WEBENGINE
     pendingRefsJson_ = "[]";
     renderReferencesJson(pendingRefsJson_);
-#else
-    referenceView_->clear();
-#endif
 }
 
 void ReferencePanel::showCopyContextMenu(const QPoint &pos) {
@@ -189,11 +83,7 @@ void ReferencePanel::showCopyContextMenu(const QPoint &pos) {
         return;
     }
 
-#ifdef QTRAG_CLIENT_HAS_WEBENGINE
     const bool hasSelection = !referenceView_->page()->selectedText().isEmpty();
-#else
-    const bool hasSelection = referenceView_->textCursor().hasSelection();
-#endif
     // 只有真的选中了引用文本时才显示复制菜单。
     if (!hasSelection) {
         return;
@@ -201,20 +91,14 @@ void ReferencePanel::showCopyContextMenu(const QPoint &pos) {
 
     QMenu menu(this);
     QAction *copyAction = menu.addAction(QString::fromUtf8("复制"));
-#ifdef QTRAG_CLIENT_HAS_WEBENGINE
     connect(copyAction, &QAction::triggered, this, [this]() {
         if (referenceView_) {
             referenceView_->triggerPageAction(QWebEnginePage::Copy);
         }
     });
     menu.exec(referenceView_->mapToGlobal(pos));
-#else
-    connect(copyAction, &QAction::triggered, referenceView_, &QTextBrowser::copy);
-    menu.exec(referenceView_->viewport()->mapToGlobal(pos));
-#endif
 }
 
-#ifdef QTRAG_CLIENT_HAS_WEBENGINE
 QString ReferencePanel::buildReferencePageHtml() const {
     // 页面内统一做：Markdown 解析、表格样式、KaTeX 公式渲染。
     return QString::fromUtf8(R"QTRAG_REF_HTML(
@@ -437,84 +321,3 @@ void ReferencePanel::renderReferencesJson(const QString &json) {
     const QString js = QString("window.setReferences(%1);").arg(json);
     referenceView_->page()->runJavaScript(js);
 }
-#else
-QString ReferencePanel::markdownToHtmlFragment(const QString &markdown) const {
-    if (markdown.isEmpty()) {
-        return QString("<p>&nbsp;</p>");
-    }
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-    // 回退模式：用 QTextDocument 转 Markdown，同时保留基础公式占位样式。
-    struct PlaceholderPair {
-        QString token;
-        QString html;
-    };
-    QVector<PlaceholderPair> placeholders;
-    QString markdownWithPlaceholders = markdown;
-    int placeholderIndex = 0;
-
-    auto replaceMathBlock = [&]() {
-        QRegularExpression blockExpr(QStringLiteral("\\$\\$([\\s\\S]*?)\\$\\$"));
-        blockExpr.setPatternOptions(QRegularExpression::DotMatchesEverythingOption);
-        int searchPos = 0;
-        while (true) {
-            const QRegularExpressionMatch match = blockExpr.match(markdownWithPlaceholders, searchPos);
-            if (!match.hasMatch()) {
-                break;
-            }
-            const QString formulaRaw = match.captured(1).trimmed();
-            const QString formulaEscaped = formulaRaw.toHtmlEscaped();
-            const QString token = QString("QTRAG_REF_MATH_BLOCK_%1").arg(placeholderIndex++);
-            placeholders.push_back({token, QString("<div class=\"math-block\">%1</div>").arg(formulaEscaped)});
-            markdownWithPlaceholders.replace(match.capturedStart(0), match.capturedLength(0), token);
-            searchPos = match.capturedStart(0) + token.size();
-        }
-    };
-
-    auto replaceMathInline = [&]() {
-        QRegularExpression inlineExpr(QStringLiteral("(?<!\\$)\\$([^\\n$]+?)\\$(?!\\$)"));
-        int searchPos = 0;
-        while (true) {
-            const QRegularExpressionMatch match = inlineExpr.match(markdownWithPlaceholders, searchPos);
-            if (!match.hasMatch()) {
-                break;
-            }
-            const QString formulaRaw = match.captured(1).trimmed();
-            const QString formulaEscaped = formulaRaw.toHtmlEscaped();
-            const QString token = QString("QTRAG_REF_MATH_INLINE_%1").arg(placeholderIndex++);
-            placeholders.push_back({token, QString("<span class=\"math-inline\">%1</span>").arg(formulaEscaped)});
-            markdownWithPlaceholders.replace(match.capturedStart(0), match.capturedLength(0), token);
-            searchPos = match.capturedStart(0) + token.size();
-        }
-    };
-
-    replaceMathBlock();
-    replaceMathInline();
-
-    QTextDocument document;
-    document.setMarkdown(markdownWithPlaceholders);
-    QString html = document.toHtml();
-    const int bodyStartTag = html.indexOf("<body");
-    QString fragment = html;
-    if (bodyStartTag >= 0) {
-        const int bodyStart = html.indexOf('>', bodyStartTag);
-        if (bodyStart >= 0) {
-            const int bodyEnd = html.indexOf("</body>", bodyStart);
-            fragment = (bodyEnd >= 0)
-                           ? html.mid(bodyStart + 1, bodyEnd - bodyStart - 1)
-                           : html.mid(bodyStart + 1);
-        }
-    }
-
-    fragment.replace("<table>", "<table class=\"md-table\">");
-    fragment.replace("<table ", "<table class=\"md-table\" ");
-    for (const auto &placeholder : placeholders) {
-        fragment.replace(placeholder.token, placeholder.html);
-    }
-    return fragment;
-#else
-    QString escaped = markdown.toHtmlEscaped();
-    escaped.replace('\n', "<br/>");
-    return QString("<p>%1</p>").arg(escaped);
-#endif
-}
-#endif

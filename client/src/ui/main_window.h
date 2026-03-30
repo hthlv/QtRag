@@ -13,14 +13,13 @@ class QEvent;
 class QSplitter;
 class QJsonArray;
 class QTextEdit;
-#ifdef QTRAG_CLIENT_HAS_WEBENGINE
 class QWebEngineView;
-#endif
 class QPushButton;
 class QLabel;
 class QPoint;
 class QNetworkAccessManager;
 class QNetworkReply;
+class QTimer;
 class SessionRepository;
 class MessageRepository;
 class SettingsRepository;
@@ -41,6 +40,7 @@ private:
     struct ChatMessageItem {
         QString role;
         QString content;
+        bool streaming{false};
     };
 
     // 创建主界面的布局和控件。
@@ -80,6 +80,12 @@ private:
 
     // 追加 AI 流式文本
     void appendAiStreamText(const QString &text);
+
+    void scheduleStreamRender();
+
+    void flushStreamRender();
+
+    void finalizeStreamingAssistantMessage();
 
     // 渲染引用列表
     void renderReferencesFromArray(const QJsonArray &refs);
@@ -124,23 +130,13 @@ protected:
 
     bool eventFilter(QObject *watched, QEvent *event) override;
 
-#ifdef QTRAG_CLIENT_HAS_WEBENGINE
     QString buildChatPageHtml() const;
-#else
-    QString buildChatBubbleHtml(const QString &role, const QString &content) const;
-
-    QString markdownToHtmlFragment(const QString &markdown) const;
-#endif
 
 private:
     // 左侧列表同时承载知识库和会话的占位数据。
     QListWidget *leftList_{nullptr};
     // 中间聊天记录显示区。
-#ifdef QTRAG_CLIENT_HAS_WEBENGINE
     QWebEngineView *chatView_{nullptr};
-#else
-    QTextEdit *chatView_{nullptr};
-#endif
     // 用户输入问题的编辑框。
     QTextEdit *inputEdit_{nullptr};
     // 触发发送动作的按钮。
@@ -156,12 +152,11 @@ private:
     QNetworkReply *currentReply_{nullptr};
     // 用于缓存尚未解析完成的 SSE 文本
     QByteArray sseBuffer_;
+    QTimer *streamRenderTimer_{nullptr};
     // 标记当前这轮 AI 回答是否已经开始显示
     bool aiMessageStarted_{false};
-#ifdef QTRAG_CLIENT_HAS_WEBENGINE
     // 聊天渲染页面是否完成初次加载，未完成时仅缓存消息，完成后统一渲染。
     bool chatViewReady_{false};
-#endif
     // 聊天区当前渲染用的消息缓存，保证普通/流式都走统一气泡样式
     QVector<ChatMessageItem> chatMessages_;
 

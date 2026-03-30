@@ -78,6 +78,7 @@ int main(int argc, char *argv[])
     // 数据库准备完成后再展示主界面，避免界面起来后才发现基础依赖不可用。
     MainWindow window;
     window.show();
+    app.processEvents();
 
     return app.exec();
 }

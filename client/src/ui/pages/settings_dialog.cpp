@@ -43,6 +43,7 @@ void SettingsDialog::setupUi() {
     // 服务端地址决定所有请求会发往哪个后端实例。
     serverUrlEdit_ = new QLineEdit(this);
     serverUrlEdit_->setPlaceholderText("http://127.0.0.1:8080");
+    serverUrlEdit_->setTextMargins(12, 10, 12, 10);
     formLayout->addRow("服务端地址：", serverUrlEdit_);
 
     // Top-K 控制每次检索会带回多少条引用片段。

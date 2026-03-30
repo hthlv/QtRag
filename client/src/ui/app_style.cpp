@@ -135,7 +135,13 @@ QWidget#CenterPanel {
 }
 
 QTextEdit,
-QLineEdit,
+QLineEdit {
+    background: #ffffff;
+    color: #1f1f1f;
+    border: 1px solid #d9d9d9;
+    border-radius: 10px;
+}
+
 QListWidget {
     background: #ffffff;
     color: #1f1f1f;
@@ -145,7 +151,6 @@ QListWidget {
 }
 
 QTableWidget,
-QTextBrowser,
 QWebEngineView {
     background: #ffffff;
     color: #1f1f1f;
@@ -182,7 +187,6 @@ QListWidget#SessionList::item:hover:!selected {
     background: #f3f3f3;
 }
 
-QTextEdit#ChatView,
 QWebEngineView#ChatView {
     background: #ededed;
     border: none;
@@ -192,10 +196,8 @@ QWebEngineView#ChatView {
 QTextEdit#InputEdit {
     background: #ffffff;
     border-radius: 8px;
-    padding: 14px 16px;
 }
 
-QTextBrowser#ReferenceView,
 QWebEngineView#ReferenceView {
     background: #f7f7f7;
     border: none;
