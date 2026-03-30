@@ -37,9 +37,13 @@ if(QT_VERSION_MAJOR GREATER_EQUAL 6)
     qt_add_executable(${QTRAG_CLIENT_TARGET}
         MANUAL_FINALIZATION
         src/main.cpp
+        src/client_resources.qrc
     )
 else()
-    add_executable(${QTRAG_CLIENT_TARGET} src/main.cpp)
+    add_executable(${QTRAG_CLIENT_TARGET}
+        src/main.cpp
+        src/client_resources.qrc
+    )
 endif()
 
 add_subdirectory(src)

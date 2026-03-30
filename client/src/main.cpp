@@ -1,5 +1,6 @@
 #include <QApplication>
 #include <QDir>
+#include <QIcon>
 #include <QLibraryInfo>
 #include <QMessageBox>
 #include <QtGlobal>
@@ -66,6 +67,8 @@ int main(int argc, char *argv[])
 {
     normalizeQtInputModule();
     QApplication app(argc, argv);
+    const QIcon appIcon(QStringLiteral(":/icons/qtrag-logo.svg"));
+    app.setWindowIcon(appIcon);
     applyAppStyle(&app);
 
     // 客户端启动时先初始化本地数据库，后续会话和配置都依赖它。
@@ -77,6 +80,7 @@ int main(int argc, char *argv[])
 
     // 数据库准备完成后再展示主界面，避免界面起来后才发现基础依赖不可用。
     MainWindow window;
+    window.setWindowIcon(appIcon);
     window.show();
     app.processEvents();
 

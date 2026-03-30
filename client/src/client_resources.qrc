@@ -1,0 +1,5 @@
+<RCC>
+  <qresource prefix="/icons">
+    <file alias="qtrag-logo.svg">../assets/qtrag-logo.svg</file>
+  </qresource>
+</RCC>
