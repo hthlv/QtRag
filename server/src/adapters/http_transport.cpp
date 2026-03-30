@@ -304,9 +304,10 @@ namespace {
         response.status_code = static_cast<unsigned>(parser.get().result_int());
         response.headers = collect_headers(parser.get());
 
-        // 只有 200 成功流才按 SSE 解析；错误响应仍保留原始 body 供上层诊断。
+        // 只有非 200 错误流才缓存完整 body；成功 SSE 只做增量转发，避免回答越长内存越涨。
         SseEventParser sse_parser(on_event);
         std::string body;
+        const bool should_buffer_body = response.status_code != 200;
 
         try {
             while (!parser.is_done()) {
@@ -319,7 +320,9 @@ namespace {
                 http::read(stream, buffer, parser, ec);
                 const std::size_t bytes_read = sizeof(chunk) - parser.get().body().size;
                 if (bytes_read > 0) {
-                    body.append(chunk, bytes_read);
+                    if (should_buffer_body) {
+                        body.append(chunk, bytes_read);
+                    }
                     if (response.status_code == 200) {
                         sse_parser.feed(std::string_view(chunk, bytes_read));
                     }
@@ -374,6 +377,7 @@ namespace {
 
         LineStreamParser line_parser(on_line);
         std::string body;
+        const bool should_buffer_body = response.status_code != 200;
 
         try {
             while (!parser.is_done()) {
@@ -385,7 +389,9 @@ namespace {
                 http::read(stream, buffer, parser, ec);
                 const std::size_t bytes_read = sizeof(chunk) - parser.get().body().size;
                 if (bytes_read > 0) {
-                    body.append(chunk, bytes_read);
+                    if (should_buffer_body) {
+                        body.append(chunk, bytes_read);
+                    }
                     if (response.status_code == 200) {
                         line_parser.feed(std::string_view(chunk, bytes_read));
                     }

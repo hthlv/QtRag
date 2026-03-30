@@ -5,6 +5,7 @@
 #include "in_memory_vector_store.h"
 #include <algorithm>
 #include <cmath>
+#include <queue>
 #include <stdexcept>
 
 void InMemoryVectorStore::add(const std::string &chunk_id,
@@ -25,8 +26,8 @@ void InMemoryVectorStore::add(const std::string &chunk_id,
 
 void InMemoryVectorStore::clear() {
     std::lock_guard<std::mutex> lock(mutex_);
-    // embedding 全量重建后，先把旧索引彻底清空，再按数据库最新记录恢复。
-    entries_.clear();
+    // embedding 全量重建后，先把旧索引彻底清空，再把旧容量一并交还给分配器。
+    std::vector<VectorStoreEntry>().swap(entries_);
 }
 
 std::vector<VectorSearchHit> InMemoryVectorStore::search(
@@ -37,26 +38,51 @@ std::vector<VectorSearchHit> InMemoryVectorStore::search(
         return hits;
     }
     std::lock_guard<std::mutex> lock(mutex_);
-    // 暴力检索：遍历全部向量，计算相似度
+    struct Candidate {
+        float score{0.0f};
+        const VectorStoreEntry *entry{nullptr};
+    };
+    struct CandidateGreater {
+        bool operator()(const Candidate &lhs, const Candidate &rhs) const {
+            return lhs.score > rhs.score;
+        }
+    };
+
+    // 暴力检索仍然遍历全部向量，但只维护 top-k 候选，避免把整库内容复制进临时 hits。
+    std::priority_queue<Candidate, std::vector<Candidate>, CandidateGreater> top_hits;
     for (const auto &entry: entries_) {
         if (entry.embedding.size() != query_embedding.size()) {
             continue;
         }
-        VectorSearchHit hit;
-        hit.chunk_id = entry.chunk_id;
-        hit.doc_id = entry.doc_id;
-        hit.content = entry.content;
-        hit.score = cosine_similarity(entry.embedding, query_embedding);
-        hits.push_back(hit);
+        const float score = cosine_similarity(entry.embedding, query_embedding);
+        if (top_hits.size() < top_k) {
+            top_hits.push({score, &entry});
+            continue;
+        }
+        if (score <= top_hits.top().score) {
+            continue;
+        }
+        top_hits.pop();
+        top_hits.push({score, &entry});
     }
-    // 按相似度从高到底排序
+
+    hits.reserve(top_hits.size());
+    while (!top_hits.empty()) {
+        const Candidate candidate = top_hits.top();
+        top_hits.pop();
+
+        VectorSearchHit hit;
+        hit.chunk_id = candidate.entry->chunk_id;
+        hit.doc_id = candidate.entry->doc_id;
+        hit.content = candidate.entry->content;
+        hit.score = candidate.score;
+        hits.push_back(std::move(hit));
+    }
+
+    // 堆里弹出的是从低到高，这里统一反转成最终返回顺序。
     std::sort(hits.begin(), hits.end(), [](const auto &lhs, const auto &rhs) {
         return lhs.score > rhs.score;
     });
-    // 截断到 top-k
-    if (hits.size() > top_k) {
-        hits.resize(top_k);
-    }
     return hits;
 }
 
